@@ -545,6 +545,14 @@ class CreditWorksheetEngine:
                 return candidate
             counter += 1
 
+    def validate_no_missing(self, field_results: list[FieldResult]):
+        missing = [r for r in field_results if r.status == "MISSING"]
+        if missing:
+            raise RuntimeError(
+                "Excel was not generated because these fields are missing: "
+                + ", ".join(f"{r.expression} ({r.label})" for r in missing)
+            )
+
     def generate_excel_from_pdf(self, pdf_path: Path, recalculate_with_excel: bool = False):
         template_path = detect_backend_template()
         self.log("[TEMPLATE] Auto-detected backend template:")
