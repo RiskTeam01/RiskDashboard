@@ -66,10 +66,13 @@ def detect_net_capital_template() -> Optional[Path]:
     preferred = TEMPLATE_DIR / NET_CAPITAL_TEMPLATE_FILENAME
     if preferred.exists():
         return preferred
-    # fallback: any file with "Net_Capital" in name
-    candidates = [p for p in TEMPLATE_DIR.glob("*.xlsx") if "Net_Capital" in p.name or "net_capital" in p.name.lower()]
-    if candidates:
-        return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+    # fallback: any xlsx whose name contains "net capital" (any spacing/underscore/case)
+    for path in TEMPLATE_DIR.glob("*.xlsx"):
+        if path.name.startswith("~$"):
+            continue
+        normalized = path.name.lower().replace("_", " ").replace("-", " ")
+        if "net capital" in normalized:
+            return path
     return None
 
 
@@ -124,6 +127,7 @@ class NetCapitalEngine:
         month: int,
         company_name: str,
         occurrences_by_code: dict,
+        date_text: Optional[str] = None,
     ) -> bool:
         """Fill the month column in the workbook. Returns True on success."""
         col_letter = MONTH_COLUMNS[month - 1]
@@ -138,24 +142,14 @@ class NetCapitalEngine:
         ws = wb[NET_CAPITAL_SHEET_NAME]
 
         # Write company name in C1 if blank
-        if not ws["C1"].value:
+        if company_name and not ws["C1"].value:
             ws["C1"] = company_name
             self.log(f"[NC] Set C1 = '{company_name}'")
 
-        # Write period end date in the date row for this month column
-        # (row 5 = code 25)
-        # We'll write the date label from occurrences
-        date_cell = f"{col_letter}5"
-        date_occ = occurrences_by_code.get("25", [])
-        if date_occ:
-            selected_date = next((o for o in date_occ if o.selected), date_occ[0])
-            if selected_date.nearby_amount_text:
-                ws[date_cell] = selected_date.nearby_amount_text
-            elif selected_date.nearby_context:
-                # date is text to the right, pick first date-like token
-                m = re.search(r"\d{1,2}/\d{1,2}/\d{2,4}", selected_date.nearby_context)
-                if m:
-                    ws[date_cell] = m.group(0)
+        # Write period end date in the date row (row 5) for this month column
+        if date_text:
+            ws[f"{col_letter}5"] = date_text
+            self.log(f"[NC] Set {col_letter}5 = '{date_text}'")
 
         fields_written = 0
         for row_num, code in NET_CAPITAL_ROW_MAP.items():
@@ -179,15 +173,35 @@ class NetCapitalEngine:
         self.log(f"[NC] Saved. Fields written: {fields_written}")
         return True
 
+    def build_occurrences(self, all_words: list) -> dict:
+        """Scan all_words for the Net Capital row codes using the shared left-side
+        amount logic from the credit worksheet engine."""
+        from app.automations.credit_worksheet.engine import CreditWorksheetEngine
+
+        cw = CreditWorksheetEngine()
+        nc_codes = sorted(set(NET_CAPITAL_ROW_MAP.values()), key=lambda v: int(v))
+        occurrences = cw.find_requested_code_occurrences(
+            all_words=all_words,
+            requested_codes=nc_codes,
+        )
+        cw.select_best_occurrences(occurrences)
+        found = sum(1 for c in nc_codes if occurrences.get(c))
+        self.log(f"[NC] Scanned {len(nc_codes)} net-capital row codes; found {found} in PDF.")
+        return occurrences
+
     def run(
         self,
         all_words: list,
-        occurrences_by_code: dict,
+        occurrences_by_code: Optional[dict],
         customer_id: str,
         customer_name: str,
     ) -> Optional[Path]:
         """Run Net Capital extraction and return the workbook path, or None on failure."""
         self.log("[NC] Starting Net Capital extraction")
+
+        # The credit worksheet only scans its own codes, so build a fresh
+        # occurrence map for the Net Capital row codes from all_words.
+        occurrences_by_code = self.build_occurrences(all_words)
 
         date_text = self.extract_period_end_date(all_words)
         if not date_text:
@@ -212,6 +226,7 @@ class NetCapitalEngine:
             month=month,
             company_name=customer_name,
             occurrences_by_code=occurrences_by_code,
+            date_text=date_text,
         )
 
         if success:
