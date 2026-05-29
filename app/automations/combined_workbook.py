@@ -89,6 +89,24 @@ def net_capital_sheet_name(year: int) -> str:
     return f"Net Capital {year}"
 
 
+def _clear_net_capital_placeholders(ws, row_map: dict) -> int:
+    """Blank the FOCUS-code placeholder values in the data region of a freshly
+    created Net Capital sheet. Clears all month columns (C–N) for each mapped
+    row, the period-end date row (5), and the C1 company-name cell."""
+    cleared = 0
+    rows_to_clear = set(row_map.keys()) | {5}
+    for row_num in rows_to_clear:
+        for col in MONTH_COLUMNS:
+            cell = ws[f"{col}{row_num}"]
+            if cell.value is not None:
+                cell.value = None
+                cleared += 1
+    if ws["C1"].value is not None:
+        ws["C1"].value = None
+        cleared += 1
+    return cleared
+
+
 # ── credit worksheet sheet ────────────────────────────────────────────────────
 
 def add_credit_month_sheet(
@@ -153,7 +171,12 @@ def add_or_update_net_capital_sheet(
             )
             ws = _copy_sheet(src_wb[src_sheet], wb, nc_name)
             src_wb.close()
-            log(f"[NC] Created '{nc_name}' from Net Capital template")
+            # The template carries FOCUS code numbers in the data cells as backend
+            # reference markers. Blank them out on the output so only real extracted
+            # values appear. Done once, at sheet creation, so later monthly updates
+            # never wipe previously-filled columns.
+            cleared = _clear_net_capital_placeholders(ws, row_map)
+            log(f"[NC] Created '{nc_name}' from template; cleared {cleared} placeholder cell(s)")
         else:
             ws = wb.create_sheet(title=nc_name)
             log(f"[NC] No Net Capital template — created blank '{nc_name}'")
