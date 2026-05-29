@@ -3,9 +3,135 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from openpyxl import load_workbook
+
 from app.customers import load_customers, get_customer
 from app.config import NET_CAPITAL_DIR, AUDIT_DIR
 from app.ui.components import head_html, topbar_html, hero_html
+
+
+# Net Capital rows we surface in the per-year financial summary.
+SUMMARY_METRICS = [
+    {"row": 7,  "label": "Total Equity",        "key": "total_equity"},
+    {"row": 47, "label": "Net Capital",         "key": "net_capital"},
+    {"row": 53, "label": "Excess Net Capital",  "key": "excess_net_capital"},
+]
+_MONTH_COLUMNS = ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"]
+_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _abbrev(val: float) -> str:
+    """Compact money label: 1,250,000 -> 1.25M."""
+    if val is None:
+        return "—"
+    sign = "-" if val < 0 else ""
+    a = abs(val)
+    if a >= 1_000_000_000:
+        return f"{sign}{a/1_000_000_000:.2f}B"
+    if a >= 1_000_000:
+        return f"{sign}{a/1_000_000:.2f}M"
+    if a >= 1_000:
+        return f"{sign}{a/1_000:.1f}K"
+    return f"{sign}{a:,.0f}"
+
+
+def _full_money(val: float) -> str:
+    if val is None:
+        return "—"
+    return f"${val:,.0f}"
+
+
+def read_year_metrics(wb_path: Path, year: int) -> dict:
+    """Read the three summary rows from a workbook's Net Capital sheet.
+    Returns {metric_key: [(month_num, value), ...]} for months that have data."""
+    result = {m["key"]: [] for m in SUMMARY_METRICS}
+    if not wb_path or not wb_path.exists():
+        return result
+    try:
+        wb = load_workbook(wb_path, data_only=True)
+    except Exception:
+        return result
+    nc_name = f"Net Capital {year}"
+    if nc_name not in wb.sheetnames:
+        wb.close()
+        return result
+    ws = wb[nc_name]
+    for metric in SUMMARY_METRICS:
+        for idx, col in enumerate(_MONTH_COLUMNS):
+            cell = ws[f"{col}{metric['row']}"]
+            v = cell.value
+            if isinstance(v, (int, float)):
+                result[metric["key"]].append((idx + 1, float(v)))
+    wb.close()
+    return result
+
+
+def _build_metrics_summary_html(metrics: dict) -> str:
+    """Build the visual financial summary for one year."""
+    has_any = any(len(v) >= 1 for v in metrics.values())
+    if not has_any:
+        return ""
+
+    cards = []
+    for metric in SUMMARY_METRICS:
+        series = metrics[metric["key"]]  # list of (month_num, value), in column order
+        if not series:
+            cards.append(f"""
+            <div class="metric-card">
+                <div class="metric-label">{metric['label']}</div>
+                <div class="metric-current muted">No data</div>
+            </div>
+            """)
+            continue
+
+        first_month, first_val = series[0]
+        last_month, last_val = series[-1]
+        delta = last_val - first_val
+        pct = (delta / abs(first_val) * 100) if first_val else 0.0
+        up = delta >= 0
+        arrow = "&#9650;" if up else "&#9660;"
+        delta_cls = "delta-up" if up else "delta-down"
+
+        # Bar chart scaling
+        vals = [v for _, v in series]
+        vmax = max(vals)
+        vmin = min(vals)
+        span = (vmax - vmin) or abs(vmax) or 1
+        bars = []
+        for m_num, v in series:
+            # Height 18%..100% so even the smallest bar is visible
+            h = 18 + 82 * ((v - vmin) / span) if span else 60
+            bar_cls = "bar-pos" if v >= 0 else "bar-neg"
+            bars.append(f"""
+            <div class="bar-col" title="{_MONTH_ABBR[m_num-1]}: {_full_money(v)}">
+                <div class="bar-val">{_abbrev(v)}</div>
+                <div class="bar {bar_cls}" style="height:{h:.0f}%;"></div>
+                <div class="bar-month">{_MONTH_ABBR[m_num-1]}</div>
+            </div>
+            """)
+
+        change_label = (
+            f'<span class="metric-delta {delta_cls}">{arrow} {abs(pct):.1f}%</span>'
+            if first_month != last_month else
+            '<span class="metric-delta delta-flat">first reading</span>'
+        )
+        since_note = (
+            f'<div class="metric-since">{_abbrev(delta) if delta < 0 else "+" + _abbrev(delta)} since {_MONTH_ABBR[first_month-1]}</div>'
+            if first_month != last_month else
+            f'<div class="metric-since">as of {_MONTH_ABBR[last_month-1]}</div>'
+        )
+
+        cards.append(f"""
+        <div class="metric-card">
+            <div class="metric-label">{metric['label']}</div>
+            <div class="metric-current">{_full_money(last_val)} {change_label}</div>
+            {since_note}
+            <div class="bar-chart">{"".join(bars)}</div>
+        </div>
+        """)
+
+    return f'<div class="metrics-summary">{"".join(cards)}</div>'
 
 
 def customers_list_page_html(user: str) -> str:
@@ -149,6 +275,10 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
         </div>
         """
 
+        # Financial summary read from the saved workbook's Net Capital sheet
+        year_metrics = read_year_metrics(wb_path, yr)
+        metrics_html = _build_metrics_summary_html(year_metrics)
+
         run_rows = []
         for r in info["runs"]:
             try:
@@ -173,18 +303,21 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
             """)
 
         year_cards_html += f"""
-        <div class="year-card" data-year="{yr}">
-            <div style="display:flex;align-items:center;justify-content:space-between;
-                        padding:14px 20px;background:var(--pc-blue-soft);
-                        border-bottom:1px solid var(--border);border-radius:10px 10px 0 0;">
-                <div>
+        <div class="year-card collapsed" data-year="{yr}">
+            <div class="year-header" onclick="toggleYear(this)">
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <span class="chevron">&#9656;</span>
                     <span style="font-size:1.35rem;font-weight:800;color:var(--pc-blue-dark);">{yr}</span>
-                    <span class="muted" style="margin-left:10px;font-size:0.8rem;">{len(info['runs'])} run{"s" if len(info["runs"]) != 1 else ""}</span>
+                    <span class="muted" style="font-size:0.8rem;">{len(info['runs'])} run{"s" if len(info["runs"]) != 1 else ""}</span>
+                    {f'<span class="header-alert">! Missing</span>' if any_missing else ''}
                 </div>
-                {dl_btn}
+                <span onclick="event.stopPropagation();">{dl_btn}</span>
             </div>
-            {quarterly_html}
-            <div class="year-runs">{"".join(run_rows)}</div>
+            <div class="year-body">
+                {quarterly_html}
+                {metrics_html}
+                <div class="year-runs">{"".join(run_rows)}</div>
+            </div>
         </div>
         """
 
@@ -204,6 +337,126 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
   }}
   .year-runs {{ padding: 0 20px; }}
   .year-card .file-row:last-child {{ border-bottom: none; }}
+
+  .year-header {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--pc-blue-soft);
+    border-radius: 10px 10px 0 0;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+  }}
+  .year-header:hover {{ filter: brightness(0.98); }}
+  .chevron {{
+    display: inline-block;
+    transition: transform 0.18s ease;
+    color: var(--pc-blue);
+    font-size: 0.9rem;
+  }}
+  .year-card.collapsed .year-header {{ border-radius: 10px; }}
+  .year-card:not(.collapsed) .chevron {{ transform: rotate(90deg); }}
+  .year-body {{
+    max-height: 4000px;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+  }}
+  .year-card.collapsed .year-body {{ max-height: 0; }}
+  .header-alert {{
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #b91c1c;
+    background: #fee2e2;
+    padding: 2px 9px;
+    border-radius: 10px;
+  }}
+  .expand-toggle {{ font-weight: 600; }}
+
+  /* Financial summary */
+  .metrics-summary {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px;
+    padding: 18px 20px;
+    background: linear-gradient(180deg, var(--pc-blue-soft) 0%, transparent 100%);
+    border-bottom: 1px solid var(--border);
+  }}
+  .metric-card {{
+    background: var(--bg, #fff);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }}
+  .metric-label {{
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }}
+  .metric-current {{
+    font-size: 1.45rem;
+    font-weight: 800;
+    color: var(--text);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+  }}
+  .metric-delta {{
+    font-size: 0.78rem;
+    font-weight: 700;
+    padding: 1px 8px;
+    border-radius: 10px;
+  }}
+  .delta-up {{ color: #065f46; background: #d1fae5; }}
+  .delta-down {{ color: #991b1b; background: #fee2e2; }}
+  .delta-flat {{ color: #6b7280; background: #f3f4f6; }}
+  .metric-since {{
+    font-size: 0.74rem;
+    color: var(--muted);
+    margin: 4px 0 12px;
+  }}
+  .bar-chart {{
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 90px;
+  }}
+  .bar-col {{
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    height: 100%;
+    min-width: 0;
+  }}
+  .bar-val {{
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: var(--muted);
+    margin-bottom: 3px;
+    white-space: nowrap;
+  }}
+  .bar {{
+    width: 100%;
+    max-width: 26px;
+    border-radius: 4px 4px 0 0;
+    transition: opacity 0.15s;
+  }}
+  .bar:hover {{ opacity: 0.8; }}
+  .bar-pos {{ background: linear-gradient(180deg, var(--pc-blue) 0%, var(--pc-blue-dark) 100%); }}
+  .bar-neg {{ background: linear-gradient(180deg, #f87171 0%, #b91c1c 100%); }}
+  .bar-month {{
+    font-size: 0.62rem;
+    color: var(--muted);
+    margin-top: 4px;
+  }}
 
   .search-bar {{
     display: flex;
@@ -310,6 +563,7 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
                 <span class="pill active" data-year="all" onclick="setPill(this)">All Years</span>
                 {"".join(f'<span class="pill" data-year="{yr}" onclick="setPill(this)">{yr}</span>' for yr in all_years)}
             </div>
+            <span class="pill expand-toggle" onclick="toggleAll(this)" data-state="collapsed">Expand all</span>
         </div>
 
         <div id="yearList">
@@ -320,6 +574,19 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
 
 <script>
 let activeYear = "all";
+
+function toggleYear(headerEl) {{
+    headerEl.closest(".year-card").classList.toggle("collapsed");
+}}
+
+function toggleAll(el) {{
+    const expanding = el.dataset.state === "collapsed";
+    document.querySelectorAll("#yearList .year-card").forEach(card => {{
+        card.classList.toggle("collapsed", !expanding);
+    }});
+    el.dataset.state = expanding ? "expanded" : "collapsed";
+    el.textContent = expanding ? "Collapse all" : "Expand all";
+}}
 
 function setPill(el) {{
     document.querySelectorAll("#yearPills .pill").forEach(p => p.classList.remove("active"));
@@ -345,8 +612,12 @@ function applyFilters() {{
             if (text.includes(q)) {{ row.classList.remove("hidden"); anyVisible = true; }}
             else {{ row.classList.add("hidden"); }}
         }});
-        if (anyVisible) card.classList.remove("hidden");
-        else card.classList.add("hidden");
+        if (anyVisible) {{
+            card.classList.remove("hidden");
+            card.classList.remove("collapsed");  // auto-expand matches while searching
+        }} else {{
+            card.classList.add("hidden");
+        }}
     }});
 }}
 </script>
