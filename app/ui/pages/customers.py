@@ -15,14 +15,43 @@ SUMMARY_METRICS = [
     {
         "row": 7, "label": "Total Equity", "key": "total_equity",
         "desc": "Ownership equity reported on the FOCUS filing (line 3500).",
+        "what": "Total Equity is the firm's net worth — total assets minus total "
+                "liabilities — as reported on the FOCUS Part II filing (line 3500). "
+                "It represents the capital that actually belongs to the owners of the firm.",
+        "why": "It is the starting point for the entire net capital computation. A "
+               "healthy, stable or growing equity base signals the firm has the "
+               "financial foundation to absorb losses and continue operating. Sharp "
+               "drops can be an early warning of distress and usually warrant a closer look.",
+        "calc": "Pulled directly from FOCUS line 3500. Regulators then apply "
+                "deductions and haircuts to this figure to arrive at Net Capital.",
     },
     {
         "row": 47, "label": "Net Capital", "key": "net_capital",
         "desc": "Regulatory net capital after all required deductions (line 3750).",
+        "what": "Net Capital is the firm's liquid, readily-available capital after "
+                "subtracting illiquid assets and applying regulatory haircuts to "
+                "securities positions (FOCUS line 3750). It is the SEC's core measure "
+                "of a broker-dealer's financial soundness under Rule 15c3-1.",
+        "why": "This is the number regulators care about most. A firm must keep Net "
+               "Capital above its required minimum at all times — falling below can "
+               "trigger restrictions or force the firm to stop doing business. "
+               "Tracking it month over month shows whether the firm's liquidity "
+               "cushion is strengthening or eroding.",
+        "calc": "Total Equity (3500) adjusted for non-allowable assets and securities "
+                "haircuts, reported on FOCUS line 3750.",
     },
     {
         "row": 53, "label": "Excess Net Capital", "key": "excess_net_capital",
         "desc": "Net capital above the required minimum — the cushion (line 3910).",
+        "what": "Excess Net Capital is the amount of Net Capital the firm holds above "
+                "its required regulatory minimum (FOCUS line 3910). In other words, "
+                "the buffer between where the firm is and the line it cannot cross.",
+        "why": "This is the firm's safety margin. A large, steady excess means the firm "
+               "has plenty of room before it risks a net-capital deficiency. A shrinking "
+               "excess — even while Net Capital looks fine — is the clearest signal that "
+               "the cushion is thinning and the firm is moving toward its regulatory floor.",
+        "calc": "Net Capital (3750) minus the firm's required minimum net capital, "
+                "reported on FOCUS line 3910.",
     },
 ]
 _MONTH_COLUMNS = ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"]
@@ -55,6 +84,20 @@ def _full_money(val) -> str:
 def _year_from_wb_name(wb_name: str) -> int:
     m = re.search(r"_(\d{4})\.xlsx$", wb_name or "")
     return int(m.group(1)) if m else 0
+
+
+def _metric_info_json() -> str:
+    import json
+    payload = {
+        m["key"]: {
+            "label": m["label"],
+            "what": m["what"],
+            "why": m["why"],
+            "calc": m["calc"],
+        }
+        for m in SUMMARY_METRICS
+    }
+    return json.dumps(payload)
 
 
 def read_year_metrics(wb_path: Path, year: int) -> dict:
@@ -203,7 +246,7 @@ def _metric_card_html(metric, series):
         <div class="metric-card empty">
             <div class="metric-top">
                 <span class="metric-label">{metric['label']}</span>
-                <span class="metric-info" title="{html.escape(metric['desc'])}">?</span>
+                <button class="metric-info" onclick="openMetricModal('{metric['key']}', this)" title="Learn more about {html.escape(metric['label'])}">?</button>
             </div>
             <div class="metric-current muted">No data yet</div>
             <div class="metric-desc">{html.escape(metric['desc'])}</div>
@@ -231,7 +274,7 @@ def _metric_card_html(metric, series):
     <div class="metric-card">
         <div class="metric-top">
             <span class="metric-label">{metric['label']}</span>
-            <span class="metric-info" title="{html.escape(metric['desc'])}">?</span>
+            <button class="metric-info" onclick="openMetricModal('{metric['key']}', this)" title="Learn more about {html.escape(metric['label'])}">?</button>
         </div>
         <div class="metric-current">{_full_money(last_v)}</div>
         <div class="metric-deltarow">{badge}<span class="metric-since">{note}</span></div>
@@ -347,11 +390,12 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
         metrics = year_metrics[yr]
 
         # Missing quarters check
-        any_missing = False
+        missing_count = 0
         for mname, mnum in QUARTERLY_MONTHS:
             is_future = (yr > current_year) or (yr == current_year and mnum > current_month)
             if not is_future and f"{mname} {yr}" not in sheets_received:
-                any_missing = True
+                missing_count += 1
+        any_missing = missing_count > 0
 
         stepper = _quarter_stepper_html(sheets_received, yr, current_year, current_month)
         metric_cards = "".join(_metric_card_html(m, metrics[m["key"]]) for m in SUMMARY_METRICS)
@@ -393,8 +437,11 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
             """)
 
         collapsed = "" if idx == 0 else "collapsed"  # newest year open by default
-        alert_chip = '<span class="header-alert">! Missing quarter</span>' if any_missing else \
-                     '<span class="header-ok">&#10003; On track</span>'
+        alert_chip = (
+            f'<span class="header-alert">! {missing_count} quarter{"s" if missing_count != 1 else ""} missing</span>'
+            if any_missing else
+            '<span class="header-ok">&#10003; On track</span>'
+        )
 
         year_cards_html += f"""
         <div class="year-card {collapsed}" data-year="{yr}">
@@ -466,8 +513,71 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
     </div>
 </div>
 
+<div id="metricModal" class="modal-overlay" onclick="closeMetricModal(event)">
+    <div class="modal-box" onclick="event.stopPropagation();">
+        <button class="modal-close" onclick="closeMetricModal(event)" title="Close">&times;</button>
+        <div class="modal-kicker">Financial Metric</div>
+        <h3 id="mmTitle" class="modal-title"></h3>
+        <div id="mmSnapshot" class="modal-snapshot"></div>
+        <div class="modal-section">
+            <div class="modal-h">What it is</div>
+            <p id="mmWhat"></p>
+        </div>
+        <div class="modal-section">
+            <div class="modal-h">Why it matters</div>
+            <p id="mmWhy"></p>
+        </div>
+        <div class="modal-section">
+            <div class="modal-h">How it's calculated</div>
+            <p id="mmCalc"></p>
+        </div>
+        <div class="modal-foot">The chart on the card shows each month with data; quarter-end months (Mar, Jun, Sep, Dec) are shown in a darker shade.</div>
+    </div>
+</div>
+
 <script>
+const METRIC_INFO = {_metric_info_json()};
+
 let activeYear = "all";
+
+function openMetricModal(key, btn) {{
+    const info = METRIC_INFO[key];
+    if (!info) return;
+    document.getElementById("mmTitle").textContent = info.label;
+    document.getElementById("mmWhat").textContent = info.what;
+    document.getElementById("mmWhy").textContent = info.why;
+    document.getElementById("mmCalc").textContent = info.calc;
+
+    // Pull live numbers from the clicked card
+    const card = btn.closest(".metric-card");
+    let snap = "";
+    if (card) {{
+        const cur = card.querySelector(".metric-current");
+        const delta = card.querySelector(".metric-delta");
+        const since = card.querySelector(".metric-since");
+        if (cur && cur.textContent.trim() && cur.textContent.trim() !== "No data yet") {{
+            snap = '<span class="mm-current">' + cur.textContent.trim() + '</span>';
+            if (delta) snap += ' ' + delta.outerHTML;
+            if (since) snap += ' <span class="mm-since">' + since.textContent.trim() + '</span>';
+        }}
+    }}
+    const snapEl = document.getElementById("mmSnapshot");
+    snapEl.innerHTML = snap;
+    snapEl.style.display = snap ? "flex" : "none";
+
+    document.getElementById("metricModal").classList.add("show");
+    document.body.style.overflow = "hidden";
+}}
+
+function closeMetricModal(event) {{
+    if (event) event.stopPropagation();
+    document.getElementById("metricModal").classList.remove("show");
+    document.body.style.overflow = "";
+}}
+
+document.addEventListener("keydown", function(e) {{
+    if (e.key === "Escape") closeMetricModal();
+}});
 
 function toggleYear(el) {{
     el.closest(".year-card").classList.toggle("collapsed");
@@ -636,9 +746,53 @@ def _detail_styles() -> str:
   .metric-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
   .metric-label { font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
   .metric-info {
-    width: 16px; height: 16px; border-radius: 50%; background: var(--border); color: #fff;
-    font-size: 0.68rem; font-weight: 800; display: flex; align-items: center; justify-content: center;
-    cursor: help;
+    width: 20px; height: 20px; border-radius: 50%; background: var(--pc-blue); color: #fff;
+    font-size: 0.72rem; font-weight: 800; display: flex; align-items: center; justify-content: center;
+    cursor: pointer; border: none; padding: 0; line-height: 1; transition: transform 0.12s, background 0.12s;
+  }
+  .metric-info:hover { background: var(--pc-blue-dark); transform: scale(1.12); }
+
+  /* Metric explainer modal */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+    backdrop-filter: blur(2px); display: none; align-items: center; justify-content: center;
+    z-index: 1000; padding: 20px;
+  }
+  .modal-overlay.show { display: flex; animation: mmFade 0.15s ease; }
+  @keyframes mmFade { from { opacity: 0; } to { opacity: 1; } }
+  .modal-box {
+    background: #fff; border-radius: 18px; max-width: 540px; width: 100%;
+    max-height: 88vh; overflow-y: auto; padding: 28px 30px 24px;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.3); position: relative;
+    animation: mmSlide 0.2s ease;
+  }
+  @keyframes mmSlide { from { transform: translateY(14px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  .modal-close {
+    position: absolute; top: 16px; right: 18px; background: var(--bg); border: 1px solid var(--border);
+    width: 32px; height: 32px; border-radius: 50%; font-size: 1.2rem; line-height: 1; color: var(--muted);
+    cursor: pointer; transition: all 0.12s;
+  }
+  .modal-close:hover { background: #fee2e2; color: #b91c1c; border-color: #fecaca; }
+  .modal-kicker {
+    font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--pc-orange-dark); margin-bottom: 4px;
+  }
+  .modal-title { margin: 0 0 14px; font-size: 1.5rem; color: var(--pc-blue-dark); letter-spacing: -0.02em; }
+  .modal-snapshot {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    background: var(--pc-blue-soft); border-radius: 12px; padding: 12px 16px; margin-bottom: 18px;
+  }
+  .mm-current { font-size: 1.4rem; font-weight: 850; color: var(--pc-blue-dark); }
+  .mm-since { font-size: 0.78rem; color: var(--muted); }
+  .modal-section { margin-bottom: 16px; }
+  .modal-h {
+    font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--pc-blue); margin-bottom: 5px;
+  }
+  .modal-section p { margin: 0; font-size: 0.9rem; line-height: 1.6; color: var(--text); }
+  .modal-foot {
+    margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border);
+    font-size: 0.76rem; color: var(--muted); line-height: 1.5;
   }
   .metric-current { font-size: 1.5rem; font-weight: 850; color: var(--pc-blue-dark); letter-spacing: -0.02em; line-height: 1.1; }
   .metric-deltarow { display: flex; align-items: center; gap: 8px; margin: 6px 0 14px; flex-wrap: wrap; }
