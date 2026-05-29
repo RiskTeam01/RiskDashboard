@@ -31,3 +31,7 @@ app.include_router(settings.router)
 app.include_router(api.router)
 app.include_router(batch.router)
 app.include_router(downloads.router)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
