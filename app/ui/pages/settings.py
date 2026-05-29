@@ -172,6 +172,24 @@ def settings_page_html(user: str, flash: str = "", flash_type: str = "ok") -> st
             <button type="submit" class="danger">Clear All Outputs</button>
         </form>
     </div>
+
+    <div class="card" style="border:1.5px solid var(--red);">
+        <h2 style="color:var(--red);">Danger Zone — Customer Data</h2>
+        <p class="muted">
+            Permanently delete <strong>all customer accounts</strong>, their report
+            history, and every accumulated Net Capital workbook. This cannot be undone.
+            You must confirm and re-enter your password to proceed.
+        </p>
+        <form method="post" action="/settings/delete-all-customers"
+              onsubmit="return confirm('Delete ALL customer accounts and Net Capital data? This cannot be undone.');">
+            <div class="field-group" style="max-width:360px;">
+                <label for="delete_customers_password">Your password</label>
+                <input type="password" id="delete_customers_password" name="password"
+                       placeholder="Enter your password to confirm" required autocomplete="current-password" />
+            </div>
+            <button type="submit" class="danger">Delete All Customer Accounts &amp; Data</button>
+        </form>
+    </div>
 </div>
 </body>
 </html>

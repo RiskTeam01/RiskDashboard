@@ -78,6 +78,33 @@ def add_report_to_customer(
     _save_raw(data)
 
 
+def delete_all_customers() -> dict:
+    """Wipe all customer accounts and their Net Capital workbooks.
+    Returns counts of what was removed."""
+    from app.config import NET_CAPITAL_DIR
+
+    data = _load_raw()
+    customer_count = len(data)
+    report_count = sum(len(c.get("reports", [])) for c in data.values())
+
+    _save_raw({})
+
+    nc_deleted = 0
+    if NET_CAPITAL_DIR.exists():
+        for path in NET_CAPITAL_DIR.glob("NetCapital_*.xlsx"):
+            try:
+                path.unlink()
+                nc_deleted += 1
+            except Exception:
+                pass
+
+    return {
+        "customers": customer_count,
+        "reports": report_count,
+        "net_capital_files": nc_deleted,
+    }
+
+
 def get_customer(customer_id: str) -> Optional[dict]:
     data = _load_raw()
     cust = data.get(customer_id)

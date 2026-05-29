@@ -205,10 +205,15 @@ class NetCapitalEngine:
 
         ws = wb[NET_CAPITAL_SHEET_NAME]
 
-        # Write company name in C1 if blank
-        if company_name and not ws["C1"].value:
+        # Write company name into the "13" header cell (C1). The template ships
+        # with the literal code "13" there; replace it once with the firm name,
+        # then leave it alone on subsequent monthly runs.
+        existing_c1 = ws["C1"].value
+        if company_name and (existing_c1 is None or str(existing_c1).strip() in ("", "13")):
             ws["C1"] = company_name
-            self.log(f"[NC] Set C1 = '{company_name}'")
+            self.log(f"[NC] Set C1 (company name) = '{company_name}'")
+        else:
+            self.log(f"[NC] C1 already set to '{existing_c1}', leaving as-is.")
 
         # Write period end date in the date row (row 5) for this month column
         if date_text:
