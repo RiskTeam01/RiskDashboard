@@ -1,0 +1,25 @@
+﻿__pycache__/
+*.pyc
+
+uploads/*
+outputs/*
+logs/*
+
+!uploads/.gitkeep
+!outputs/.gitkeep
+!logs/.gitkeep
+
+.env
+.venv/
+venv/
+
+*.pdf
+*.zip
+
+~$*.xlsx
+
+users.json
+
+# Keep internal Excel templates off GitHub unless you are 100% sure they are safe
+templates/*.xlsx
+!templates/.gitkeep
