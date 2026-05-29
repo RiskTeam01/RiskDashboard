@@ -15,43 +15,34 @@ SUMMARY_METRICS = [
     {
         "row": 7, "label": "Total Equity", "key": "total_equity",
         "desc": "Ownership equity reported on the FOCUS filing (line 3500).",
-        "what": "Total Equity is the firm's net worth — total assets minus total "
-                "liabilities — as reported on the FOCUS Part II filing (line 3500). "
-                "It represents the capital that actually belongs to the owners of the firm.",
-        "why": "It is the starting point for the entire net capital computation. A "
-               "healthy, stable or growing equity base signals the firm has the "
-               "financial foundation to absorb losses and continue operating. Sharp "
-               "drops can be an early warning of distress and usually warrant a closer look.",
-        "calc": "Pulled directly from FOCUS line 3500. Regulators then apply "
-                "deductions and haircuts to this figure to arrive at Net Capital.",
+        "noun": "the firm's capital base",
+        "up_msg": "is growing, strengthening the firm's financial foundation and its "
+                  "capacity to absorb losses.",
+        "down_msg": "is shrinking, which reduces the firm's cushion against losses and "
+                    "can be an early warning sign worth watching.",
+        "flat_msg": "is holding steady, indicating a stable capital position with little "
+                    "movement between filings.",
     },
     {
         "row": 47, "label": "Net Capital", "key": "net_capital",
         "desc": "Regulatory net capital after all required deductions (line 3750).",
-        "what": "Net Capital is the firm's liquid, readily-available capital after "
-                "subtracting illiquid assets and applying regulatory haircuts to "
-                "securities positions (FOCUS line 3750). It is the SEC's core measure "
-                "of a broker-dealer's financial soundness under Rule 15c3-1.",
-        "why": "This is the number regulators care about most. A firm must keep Net "
-               "Capital above its required minimum at all times — falling below can "
-               "trigger restrictions or force the firm to stop doing business. "
-               "Tracking it month over month shows whether the firm's liquidity "
-               "cushion is strengthening or eroding.",
-        "calc": "Total Equity (3500) adjusted for non-allowable assets and securities "
-                "haircuts, reported on FOCUS line 3750.",
+        "noun": "regulatory net capital",
+        "up_msg": "is improving, moving the firm further above its required regulatory "
+                  "minimum — a healthy sign for compliance.",
+        "down_msg": "is declining; continued erosion would pressure the firm's compliance "
+                    "buffer and should be monitored closely.",
+        "flat_msg": "is stable, keeping the firm's regulatory liquidity roughly level "
+                    "across these filings.",
     },
     {
         "row": 53, "label": "Excess Net Capital", "key": "excess_net_capital",
         "desc": "Net capital above the required minimum — the cushion (line 3910).",
-        "what": "Excess Net Capital is the amount of Net Capital the firm holds above "
-                "its required regulatory minimum (FOCUS line 3910). In other words, "
-                "the buffer between where the firm is and the line it cannot cross.",
-        "why": "This is the firm's safety margin. A large, steady excess means the firm "
-               "has plenty of room before it risks a net-capital deficiency. A shrinking "
-               "excess — even while Net Capital looks fine — is the clearest signal that "
-               "the cushion is thinning and the firm is moving toward its regulatory floor.",
-        "calc": "Net Capital (3750) minus the firm's required minimum net capital, "
-                "reported on FOCUS line 3910.",
+        "noun": "the safety cushion above the regulatory minimum",
+        "up_msg": "is widening, giving the firm more room before it risks a net-capital "
+                  "deficiency — a clearly positive trend.",
+        "down_msg": "is thinning; if this continues the firm moves closer to its "
+                    "net-capital floor, the most important early-warning signal here.",
+        "flat_msg": "is steady, holding the firm's safety margin roughly constant.",
     },
 ]
 _MONTH_COLUMNS = ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"]
@@ -86,17 +77,116 @@ def _year_from_wb_name(wb_name: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _metric_info_json() -> str:
+def _build_metric_analysis_html(metric, series) -> str:
+    """Build a data-driven analysis of how this metric has moved over time."""
+    label = metric["label"]
+
+    if not series:
+        return (f'<h3 class="modal-title">{html.escape(label)}</h3>'
+                f'<div class="mm-empty">No data has been recorded for {html.escape(label)} '
+                f'yet. Once filings are processed, this view will break down how it is trending.</div>')
+
+    first_m, first_v = series[0]
+    last_m, last_v = series[-1]
+    n = len(series)
+    vals = [v for _, v in series]
+    high_v = max(vals); high_m = series[vals.index(high_v)][0]
+    low_v = min(vals); low_m = series[vals.index(low_v)][0]
+    avg_v = sum(vals) / n
+
+    net = last_v - first_v
+    pct = (net / abs(first_v) * 100) if first_v else 0.0
+    direction = "up" if net > 0.0001 else ("down" if net < -0.0001 else "flat")
+
+    # Verdict bucket
+    if direction == "flat" or abs(pct) < 0.5:
+        verdict, vcls = "Stable", "verdict-neutral"
+        msg = metric["flat_msg"]
+    elif direction == "up":
+        verdict = "Positive" if pct >= 5 else "Improving"
+        vcls = "verdict-good"
+        msg = metric["up_msg"]
+    else:
+        verdict = "Negative" if pct <= -5 else "Caution"
+        vcls = "verdict-bad" if pct <= -5 else "verdict-warn"
+        msg = metric["down_msg"]
+
+    # Headline
+    arrow = "&#9650;" if net > 0 else ("&#9660;" if net < 0 else "&#8211;")
+    sign = "+" if net >= 0 else ""
+    if n == 1:
+        headline_note = f'Only one reading on file ({_MONTH_ABBR[first_m-1]}). A trend will appear once more filings are processed.'
+    else:
+        headline_note = (f'{sign}{_full_money(net)} ({sign}{pct:.1f}%) from {_MONTH_ABBR[first_m-1]} '
+                         f'to {_MONTH_ABBR[last_m-1]} across {n} readings.')
+
+    # Narrative
+    narrative = f'Over the tracked period, {metric["noun"]} {msg}'
+
+    # Period-over-period movement rows
+    move_rows = ""
+    if n >= 2:
+        rows = []
+        for i in range(1, n):
+            pm, pv = series[i-1]
+            cm, cv = series[i]
+            d = cv - pv
+            dp = (d / abs(pv) * 100) if pv else 0.0
+            up = d >= 0
+            a = "&#9650;" if up else "&#9660;"
+            cls = "mv-up" if up else "mv-down"
+            s = "+" if d >= 0 else ""
+            rows.append(f"""
+            <div class="mm-qrow">
+                <span class="mm-qlabel">{_MONTH_ABBR[pm-1]} &rarr; {_MONTH_ABBR[cm-1]}</span>
+                <span class="mm-qval">{_full_money(cv)}</span>
+                <span class="mm-qdelta {cls}">{a} {s}{_abbrev(d)} ({s}{dp:.1f}%)</span>
+            </div>
+            """)
+        move_rows = f"""
+        <div class="modal-section">
+            <div class="modal-h">Movement period over period</div>
+            <div class="mm-quarters">{"".join(rows)}</div>
+        </div>
+        """
+
+    # Stats grid
+    stats = f"""
+    <div class="mm-stats">
+        <div class="mm-stat"><div class="mm-stat-label">Latest</div><div class="mm-stat-val">{_abbrev(last_v)}</div><div class="mm-stat-sub">{_MONTH_ABBR[last_m-1]}</div></div>
+        <div class="mm-stat"><div class="mm-stat-label">Period High</div><div class="mm-stat-val">{_abbrev(high_v)}</div><div class="mm-stat-sub">{_MONTH_ABBR[high_m-1]}</div></div>
+        <div class="mm-stat"><div class="mm-stat-label">Period Low</div><div class="mm-stat-val">{_abbrev(low_v)}</div><div class="mm-stat-sub">{_MONTH_ABBR[low_m-1]}</div></div>
+        <div class="mm-stat"><div class="mm-stat-label">Average</div><div class="mm-stat-val">{_abbrev(avg_v)}</div><div class="mm-stat-sub">{n} readings</div></div>
+    </div>
+    """
+
+    return f"""
+    <div class="mm-head">
+        <h3 class="modal-title">{html.escape(label)}</h3>
+        <span class="mm-verdict {vcls}">{verdict}</span>
+    </div>
+    <div class="mm-headline">
+        <span class="mm-current">{_full_money(last_v)}</span>
+        <span class="mm-change {('mv-up' if net>=0 else 'mv-down')}">{arrow} {sign}{pct:.1f}%</span>
+    </div>
+    <div class="mm-subnote">{headline_note}</div>
+    <div class="modal-section">
+        <div class="modal-h">What this means</div>
+        <p>{narrative}</p>
+    </div>
+    {move_rows}
+    {stats}
+    <div class="modal-foot">Figures read live from the Net Capital sheet (FOCUS {metric['desc'].split('(')[-1].rstrip(').')}). Quarter-end months are shown darker on the card chart.</div>
+    """
+
+
+def _metric_analysis_json(year_metrics: dict) -> str:
+    """Build {f'{year}|{key}': html} for every year/metric pairing."""
     import json
-    payload = {
-        m["key"]: {
-            "label": m["label"],
-            "what": m["what"],
-            "why": m["why"],
-            "calc": m["calc"],
-        }
-        for m in SUMMARY_METRICS
-    }
+    payload = {}
+    for yr, metrics in year_metrics.items():
+        for m in SUMMARY_METRICS:
+            payload[f"{yr}|{m['key']}"] = _build_metric_analysis_html(m, metrics[m["key"]])
     return json.dumps(payload)
 
 
@@ -239,14 +329,15 @@ def _quarter_stepper_html(sheets_received, yr, current_year, current_month):
     return f'<div class="stepper">{"".join(steps)}</div>'
 
 
-def _metric_card_html(metric, series):
+def _metric_card_html(metric, series, yr):
     last_v = _latest_value(series)
+    modal_id = f"{yr}|{metric['key']}"
     if not series:
         return f"""
         <div class="metric-card empty">
             <div class="metric-top">
                 <span class="metric-label">{metric['label']}</span>
-                <button class="metric-info" onclick="openMetricModal('{metric['key']}', this)" title="Learn more about {html.escape(metric['label'])}">?</button>
+                <button class="metric-info" onclick="openMetricModal('{modal_id}')" title="Analyze {html.escape(metric['label'])}">?</button>
             </div>
             <div class="metric-current muted">No data yet</div>
             <div class="metric-desc">{html.escape(metric['desc'])}</div>
@@ -274,7 +365,7 @@ def _metric_card_html(metric, series):
     <div class="metric-card">
         <div class="metric-top">
             <span class="metric-label">{metric['label']}</span>
-            <button class="metric-info" onclick="openMetricModal('{metric['key']}', this)" title="Learn more about {html.escape(metric['label'])}">?</button>
+            <button class="metric-info" onclick="openMetricModal('{modal_id}')" title="Analyze {html.escape(metric['label'])}">?</button>
         </div>
         <div class="metric-current">{_full_money(last_v)}</div>
         <div class="metric-deltarow">{badge}<span class="metric-since">{note}</span></div>
@@ -398,7 +489,7 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
         any_missing = missing_count > 0
 
         stepper = _quarter_stepper_html(sheets_received, yr, current_year, current_month)
-        metric_cards = "".join(_metric_card_html(m, metrics[m["key"]]) for m in SUMMARY_METRICS)
+        metric_cards = "".join(_metric_card_html(m, metrics[m["key"]], yr) for m in SUMMARY_METRICS)
 
         # Inline header KPI
         hdr_nc = _latest_value(metrics["net_capital"])
@@ -516,55 +607,20 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
 <div id="metricModal" class="modal-overlay" onclick="closeMetricModal(event)">
     <div class="modal-box" onclick="event.stopPropagation();">
         <button class="modal-close" onclick="closeMetricModal(event)" title="Close">&times;</button>
-        <div class="modal-kicker">Financial Metric</div>
-        <h3 id="mmTitle" class="modal-title"></h3>
-        <div id="mmSnapshot" class="modal-snapshot"></div>
-        <div class="modal-section">
-            <div class="modal-h">What it is</div>
-            <p id="mmWhat"></p>
-        </div>
-        <div class="modal-section">
-            <div class="modal-h">Why it matters</div>
-            <p id="mmWhy"></p>
-        </div>
-        <div class="modal-section">
-            <div class="modal-h">How it's calculated</div>
-            <p id="mmCalc"></p>
-        </div>
-        <div class="modal-foot">The chart on the card shows each month with data; quarter-end months (Mar, Jun, Sep, Dec) are shown in a darker shade.</div>
+        <div class="modal-kicker">Metric Analysis</div>
+        <div id="mmBody"></div>
     </div>
 </div>
 
 <script>
-const METRIC_INFO = {_metric_info_json()};
+const METRIC_ANALYSIS = {_metric_analysis_json(year_metrics)};
 
 let activeYear = "all";
 
-function openMetricModal(key, btn) {{
-    const info = METRIC_INFO[key];
-    if (!info) return;
-    document.getElementById("mmTitle").textContent = info.label;
-    document.getElementById("mmWhat").textContent = info.what;
-    document.getElementById("mmWhy").textContent = info.why;
-    document.getElementById("mmCalc").textContent = info.calc;
-
-    // Pull live numbers from the clicked card
-    const card = btn.closest(".metric-card");
-    let snap = "";
-    if (card) {{
-        const cur = card.querySelector(".metric-current");
-        const delta = card.querySelector(".metric-delta");
-        const since = card.querySelector(".metric-since");
-        if (cur && cur.textContent.trim() && cur.textContent.trim() !== "No data yet") {{
-            snap = '<span class="mm-current">' + cur.textContent.trim() + '</span>';
-            if (delta) snap += ' ' + delta.outerHTML;
-            if (since) snap += ' <span class="mm-since">' + since.textContent.trim() + '</span>';
-        }}
-    }}
-    const snapEl = document.getElementById("mmSnapshot");
-    snapEl.innerHTML = snap;
-    snapEl.style.display = snap ? "flex" : "none";
-
+function openMetricModal(id) {{
+    const html = METRIC_ANALYSIS[id];
+    if (!html) return;
+    document.getElementById("mmBody").innerHTML = html;
     document.getElementById("metricModal").classList.add("show");
     document.body.style.overflow = "hidden";
 }}
@@ -777,22 +833,57 @@ def _detail_styles() -> str:
     font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em;
     color: var(--pc-orange-dark); margin-bottom: 4px;
   }
-  .modal-title { margin: 0 0 14px; font-size: 1.5rem; color: var(--pc-blue-dark); letter-spacing: -0.02em; }
-  .modal-snapshot {
-    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-    background: var(--pc-blue-soft); border-radius: 12px; padding: 12px 16px; margin-bottom: 18px;
+  .modal-title { margin: 0; font-size: 1.5rem; color: var(--pc-blue-dark); letter-spacing: -0.02em; }
+  .mm-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+  .mm-verdict {
+    font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em;
+    padding: 4px 12px; border-radius: 20px; white-space: nowrap;
   }
-  .mm-current { font-size: 1.4rem; font-weight: 850; color: var(--pc-blue-dark); }
-  .mm-since { font-size: 0.78rem; color: var(--muted); }
-  .modal-section { margin-bottom: 16px; }
+  .verdict-good { color: #047857; background: #d1fae5; }
+  .verdict-warn { color: var(--pc-orange-dark); background: #fef3c7; }
+  .verdict-bad  { color: #b91c1c; background: #fee2e2; }
+  .verdict-neutral { color: #475569; background: #eef0f3; }
+
+  .mm-headline {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    background: var(--pc-blue-soft); border-radius: 12px; padding: 14px 18px; margin-bottom: 8px;
+  }
+  .mm-current { font-size: 1.8rem; font-weight: 850; color: var(--pc-blue-dark); letter-spacing: -0.02em; }
+  .mm-change { font-size: 0.9rem; font-weight: 800; padding: 2px 10px; border-radius: 11px; }
+  .mv-up { color: #047857; background: #d1fae5; }
+  .mv-down { color: #b91c1c; background: #fee2e2; }
+  .mm-subnote { font-size: 0.82rem; color: var(--muted); margin-bottom: 18px; line-height: 1.5; }
+
+  .modal-section { margin-bottom: 18px; }
   .modal-h {
     font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em;
-    color: var(--pc-blue); margin-bottom: 5px;
+    color: var(--pc-blue); margin-bottom: 8px;
   }
-  .modal-section p { margin: 0; font-size: 0.9rem; line-height: 1.6; color: var(--text); }
+  .modal-section p { margin: 0; font-size: 0.92rem; line-height: 1.6; color: var(--text); }
+
+  .mm-quarters { display: flex; flex-direction: column; gap: 2px; }
+  .mm-qrow {
+    display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 12px;
+    padding: 9px 12px; border-radius: 9px;
+  }
+  .mm-qrow:nth-child(odd) { background: #f8fafc; }
+  .mm-qlabel { font-size: 0.82rem; font-weight: 700; color: var(--text); }
+  .mm-qval { font-size: 0.82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .mm-qdelta { font-size: 0.78rem; font-weight: 800; padding: 1px 8px; border-radius: 9px; white-space: nowrap; }
+
+  .mm-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 4px; }
+  .mm-stat { background: #f8fafc; border: 1px solid var(--border); border-radius: 11px; padding: 10px 12px; text-align: center; }
+  .mm-stat-label { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .mm-stat-val { font-size: 1.1rem; font-weight: 850; color: var(--pc-blue-dark); margin: 3px 0 1px; }
+  .mm-stat-sub { font-size: 0.62rem; color: var(--muted); }
+
+  .mm-empty { font-size: 0.92rem; color: var(--muted); line-height: 1.6; padding: 10px 0 4px; }
   .modal-foot {
     margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border);
-    font-size: 0.76rem; color: var(--muted); line-height: 1.5;
+    font-size: 0.74rem; color: var(--muted); line-height: 1.5;
+  }
+  @media (max-width: 480px) {
+    .mm-stats { grid-template-columns: repeat(2, 1fr); }
   }
   .metric-current { font-size: 1.5rem; font-weight: 850; color: var(--pc-blue-dark); letter-spacing: -0.02em; line-height: 1.1; }
   .metric-deltarow { display: flex; align-items: center; gap: 8px; margin: 6px 0 14px; flex-wrap: wrap; }
