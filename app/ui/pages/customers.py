@@ -12,16 +12,26 @@ from app.ui.components import head_html, topbar_html, hero_html
 
 # Net Capital rows we surface in the per-year financial summary.
 SUMMARY_METRICS = [
-    {"row": 7,  "label": "Total Equity",        "key": "total_equity"},
-    {"row": 47, "label": "Net Capital",         "key": "net_capital"},
-    {"row": 53, "label": "Excess Net Capital",  "key": "excess_net_capital"},
+    {
+        "row": 7, "label": "Total Equity", "key": "total_equity",
+        "desc": "Ownership equity reported on the FOCUS filing (line 3500).",
+    },
+    {
+        "row": 47, "label": "Net Capital", "key": "net_capital",
+        "desc": "Regulatory net capital after all required deductions (line 3750).",
+    },
+    {
+        "row": 53, "label": "Excess Net Capital", "key": "excess_net_capital",
+        "desc": "Net capital above the required minimum — the cushion (line 3910).",
+    },
 ]
 _MONTH_COLUMNS = ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"]
 _MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+QUARTERLY_MONTHS = [("March", 3), ("June", 6), ("September", 9), ("December", 12)]
 
 
-def _abbrev(val: float) -> str:
+def _abbrev(val) -> str:
     """Compact money label: 1,250,000 -> 1.25M."""
     if val is None:
         return "—"
@@ -36,10 +46,15 @@ def _abbrev(val: float) -> str:
     return f"{sign}{a:,.0f}"
 
 
-def _full_money(val: float) -> str:
+def _full_money(val) -> str:
     if val is None:
         return "—"
     return f"${val:,.0f}"
+
+
+def _year_from_wb_name(wb_name: str) -> int:
+    m = re.search(r"_(\d{4})\.xlsx$", wb_name or "")
+    return int(m.group(1)) if m else 0
 
 
 def read_year_metrics(wb_path: Path, year: int) -> dict:
@@ -59,80 +74,14 @@ def read_year_metrics(wb_path: Path, year: int) -> dict:
     ws = wb[nc_name]
     for metric in SUMMARY_METRICS:
         for idx, col in enumerate(_MONTH_COLUMNS):
-            cell = ws[f"{col}{metric['row']}"]
-            v = cell.value
+            v = ws[f"{col}{metric['row']}"].value
             if isinstance(v, (int, float)):
                 result[metric["key"]].append((idx + 1, float(v)))
     wb.close()
     return result
 
 
-def _build_metrics_summary_html(metrics: dict) -> str:
-    """Build the visual financial summary for one year."""
-    has_any = any(len(v) >= 1 for v in metrics.values())
-    if not has_any:
-        return ""
-
-    cards = []
-    for metric in SUMMARY_METRICS:
-        series = metrics[metric["key"]]  # list of (month_num, value), in column order
-        if not series:
-            cards.append(f"""
-            <div class="metric-card">
-                <div class="metric-label">{metric['label']}</div>
-                <div class="metric-current muted">No data</div>
-            </div>
-            """)
-            continue
-
-        first_month, first_val = series[0]
-        last_month, last_val = series[-1]
-        delta = last_val - first_val
-        pct = (delta / abs(first_val) * 100) if first_val else 0.0
-        up = delta >= 0
-        arrow = "&#9650;" if up else "&#9660;"
-        delta_cls = "delta-up" if up else "delta-down"
-
-        # Bar chart scaling
-        vals = [v for _, v in series]
-        vmax = max(vals)
-        vmin = min(vals)
-        span = (vmax - vmin) or abs(vmax) or 1
-        bars = []
-        for m_num, v in series:
-            # Height 18%..100% so even the smallest bar is visible
-            h = 18 + 82 * ((v - vmin) / span) if span else 60
-            bar_cls = "bar-pos" if v >= 0 else "bar-neg"
-            bars.append(f"""
-            <div class="bar-col" title="{_MONTH_ABBR[m_num-1]}: {_full_money(v)}">
-                <div class="bar-val">{_abbrev(v)}</div>
-                <div class="bar {bar_cls}" style="height:{h:.0f}%;"></div>
-                <div class="bar-month">{_MONTH_ABBR[m_num-1]}</div>
-            </div>
-            """)
-
-        change_label = (
-            f'<span class="metric-delta {delta_cls}">{arrow} {abs(pct):.1f}%</span>'
-            if first_month != last_month else
-            '<span class="metric-delta delta-flat">first reading</span>'
-        )
-        since_note = (
-            f'<div class="metric-since">{_abbrev(delta) if delta < 0 else "+" + _abbrev(delta)} since {_MONTH_ABBR[first_month-1]}</div>'
-            if first_month != last_month else
-            f'<div class="metric-since">as of {_MONTH_ABBR[last_month-1]}</div>'
-        )
-
-        cards.append(f"""
-        <div class="metric-card">
-            <div class="metric-label">{metric['label']}</div>
-            <div class="metric-current">{_full_money(last_val)} {change_label}</div>
-            {since_note}
-            <div class="bar-chart">{"".join(bars)}</div>
-        </div>
-        """)
-
-    return f'<div class="metrics-summary">{"".join(cards)}</div>'
-
+# ── list page ─────────────────────────────────────────────────────────────────
 
 def customers_list_page_html(user: str) -> str:
     data = load_customers()
@@ -193,9 +142,102 @@ def customers_list_page_html(user: str) -> str:
     """
 
 
-def _year_from_wb_name(wb_name: str) -> int:
-    m = re.search(r"_(\d{4})\.xlsx$", wb_name or "")
-    return int(m.group(1)) if m else 0
+# ── detail page builders ──────────────────────────────────────────────────────
+
+def _latest_value(series):
+    return series[-1][1] if series else None
+
+
+def _first_value(series):
+    return series[0][1] if series else None
+
+
+def _delta_badge(series):
+    """Returns (html_badge, since_note) comparing latest vs first reading."""
+    if not series or len(series) < 2:
+        if series:
+            m = series[0][0]
+            return ('<span class="metric-delta delta-flat">first reading</span>',
+                    f'as of {_MONTH_ABBR[m-1]}')
+        return ("", "")
+    first_m, first_v = series[0]
+    last_m, last_v = series[-1]
+    delta = last_v - first_v
+    pct = (delta / abs(first_v) * 100) if first_v else 0.0
+    up = delta >= 0
+    arrow = "&#9650;" if up else "&#9660;"
+    cls = "delta-up" if up else "delta-down"
+    badge = f'<span class="metric-delta {cls}">{arrow} {abs(pct):.1f}%</span>'
+    sign = "+" if delta >= 0 else ""
+    note = f'{sign}{_abbrev(delta)} since {_MONTH_ABBR[first_m-1]}'
+    return badge, note
+
+
+def _quarter_stepper_html(sheets_received, yr, current_year, current_month):
+    steps = []
+    for i, (mname, mnum) in enumerate(QUARTERLY_MONTHS):
+        received = f"{mname} {yr}" in sheets_received
+        is_future = (yr > current_year) or (yr == current_year and mnum > current_month)
+        if received:
+            state, icon, qlabel = "step-done", "&#10003;", "Filed"
+        elif is_future:
+            state, icon, qlabel = "step-future", "&middot;", "Upcoming"
+        else:
+            state, icon, qlabel = "step-missing", "!", "Missing"
+        connector = '<div class="step-line"></div>' if i < len(QUARTERLY_MONTHS) - 1 else ""
+        steps.append(f"""
+        <div class="step {state}">
+            <div class="step-dot">{icon}</div>
+            <div class="step-name">Q{i+1} · {mname}</div>
+            <div class="step-status">{qlabel}</div>
+        </div>
+        {connector}
+        """)
+    return f'<div class="stepper">{"".join(steps)}</div>'
+
+
+def _metric_card_html(metric, series):
+    last_v = _latest_value(series)
+    if not series:
+        return f"""
+        <div class="metric-card empty">
+            <div class="metric-top">
+                <span class="metric-label">{metric['label']}</span>
+                <span class="metric-info" title="{html.escape(metric['desc'])}">?</span>
+            </div>
+            <div class="metric-current muted">No data yet</div>
+            <div class="metric-desc">{html.escape(metric['desc'])}</div>
+        </div>
+        """
+    badge, note = _delta_badge(series)
+
+    vals = [v for _, v in series]
+    vmax, vmin = max(vals), min(vals)
+    span = (vmax - vmin) or abs(vmax) or 1
+    bars = []
+    for m_num, v in series:
+        h = 20 + 80 * ((v - vmin) / span) if span else 60
+        bcls = "bar-pos" if v >= 0 else "bar-neg"
+        is_q = m_num in (3, 6, 9, 12)
+        bars.append(f"""
+        <div class="bar-col" title="{_MONTH_ABBR[m_num-1]}: {_full_money(v)}">
+            <div class="bar-val">{_abbrev(v)}</div>
+            <div class="bar {bcls} {'bar-q' if is_q else ''}" style="height:{h:.0f}%;"></div>
+            <div class="bar-month">{_MONTH_ABBR[m_num-1]}</div>
+        </div>
+        """)
+
+    return f"""
+    <div class="metric-card">
+        <div class="metric-top">
+            <span class="metric-label">{metric['label']}</span>
+            <span class="metric-info" title="{html.escape(metric['desc'])}">?</span>
+        </div>
+        <div class="metric-current">{_full_money(last_v)}</div>
+        <div class="metric-deltarow">{badge}<span class="metric-since">{note}</span></div>
+        <div class="bar-chart">{"".join(bars)}</div>
+    </div>
+    """
 
 
 def customer_detail_page_html(user: str, customer_id: str) -> str:
@@ -217,9 +259,7 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
         reverse=True,
     )
 
-    QUARTERLY_MONTHS = [("March", 3), ("June", 6), ("September", 9), ("December", 12)]
-
-    # Group by year (derived from workbook filename)
+    # Group by year
     years: dict[int, dict] = {}
     for r in reports:
         yr = _year_from_wb_name(r.get("output_filename", ""))
@@ -227,343 +267,197 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
             years[yr] = {"workbook_filename": r.get("output_filename", ""), "runs": []}
         years[yr]["runs"].append(r)
 
-    all_years = sorted(years.keys(), reverse=True)  # newest first
+    all_years = sorted(years.keys(), reverse=True)
     current_year = datetime.now().year
     current_month = datetime.now().month
 
+    # Pre-read metrics for each year (also used for account overview)
+    year_metrics = {yr: read_year_metrics(NET_CAPITAL_DIR / years[yr]["workbook_filename"], yr)
+                    for yr in all_years}
+
+    # ── Account overview KPIs ────────────────────────────────────────────────
+    total_filings = len(reports)
+    years_tracked = len(all_years)
+    latest_filing_label = reports[0].get("period_label", "—") if reports else "—"
+
+    newest_year = all_years[0] if all_years else None
+    latest_nc = None
+    latest_equity = None
+    if newest_year is not None:
+        latest_nc = _latest_value(year_metrics[newest_year]["net_capital"])
+        latest_equity = _latest_value(year_metrics[newest_year]["total_equity"])
+
+    # Compliance for newest year
+    compliance_txt = "—"
+    compliance_cls = "kpi-neutral"
+    if newest_year is not None:
+        sheets_recv = {r.get("credit_sheet", "") for r in years[newest_year]["runs"]}
+        due = [m for (mn, m) in QUARTERLY_MONTHS
+               if not ((newest_year > current_year) or (newest_year == current_year and m > current_month))]
+        filed = [m for (mn, m) in QUARTERLY_MONTHS if f"{mn} {newest_year}" in sheets_recv]
+        if due:
+            pct = int(round(len(filed) / len(due) * 100))
+            compliance_txt = f"{pct}%"
+            compliance_cls = "kpi-good" if pct == 100 else ("kpi-warn" if pct >= 50 else "kpi-bad")
+
+    overview_html = f"""
+    <div class="overview">
+        <div class="kpi">
+            <div class="kpi-label">Total Filings</div>
+            <div class="kpi-value">{total_filings}</div>
+            <div class="kpi-sub">across {years_tracked} year{'s' if years_tracked != 1 else ''}</div>
+        </div>
+        <div class="kpi">
+            <div class="kpi-label">Latest Filing</div>
+            <div class="kpi-value sm">{html.escape(latest_filing_label)}</div>
+            <div class="kpi-sub">most recent period</div>
+        </div>
+        <div class="kpi">
+            <div class="kpi-label">Net Capital</div>
+            <div class="kpi-value sm">{_full_money(latest_nc)}</div>
+            <div class="kpi-sub">latest reported</div>
+        </div>
+        <div class="kpi">
+            <div class="kpi-label">Total Equity</div>
+            <div class="kpi-value sm">{_full_money(latest_equity)}</div>
+            <div class="kpi-sub">latest reported</div>
+        </div>
+        <div class="kpi {compliance_cls}">
+            <div class="kpi-label">Quarterly Compliance</div>
+            <div class="kpi-value">{compliance_txt}</div>
+            <div class="kpi-sub">{newest_year if newest_year else ''} filings on time</div>
+        </div>
+    </div>
+    """
+
+    # ── Year panels ──────────────────────────────────────────────────────────
     year_cards_html = ""
-    for yr in all_years:
+    for idx, yr in enumerate(all_years):
         info = years[yr]
         wb_name = info["workbook_filename"]
         wb_path = NET_CAPITAL_DIR / wb_name if wb_name else None
         wb_exists = wb_path and wb_path.exists()
         dl_btn = (
-            f'<a class="button-link orange" href="/download-net-capital/{html.escape(wb_name)}">Download</a>'
+            f'<a class="button-link orange" href="/download-net-capital/{html.escape(wb_name)}">Download Workbook</a>'
             if wb_exists else
             '<span class="muted" style="font-size:12px;">File missing</span>'
         )
 
-        # Collect which credit sheets exist for this year
         sheets_received = {r.get("credit_sheet", "") for r in info["runs"]}
+        metrics = year_metrics[yr]
 
-        quarterly_badges = []
+        # Missing quarters check
         any_missing = False
-        for month_name, month_num in QUARTERLY_MONTHS:
-            sheet_name = f"{month_name} {yr}"
-            received = sheet_name in sheets_received
-            # Don't flag future quarters as missing
-            is_future = (yr > current_year) or (yr == current_year and month_num > current_month)
-            if received:
-                quarterly_badges.append(
-                    f'<span class="q-badge q-received" title="{sheet_name} received">&#10003; {month_name}</span>'
-                )
-            elif is_future:
-                quarterly_badges.append(
-                    f'<span class="q-badge q-future" title="{sheet_name} not yet due">&ndash; {month_name}</span>'
-                )
-            else:
-                quarterly_badges.append(
-                    f'<span class="q-badge q-missing" title="{sheet_name} missing">&#33; {month_name}</span>'
-                )
+        for mname, mnum in QUARTERLY_MONTHS:
+            is_future = (yr > current_year) or (yr == current_year and mnum > current_month)
+            if not is_future and f"{mname} {yr}" not in sheets_received:
                 any_missing = True
 
-        quarterly_html = f"""
-        <div class="quarterly-summary">
-            <span class="q-label">Quarterlies:</span>
-            {"".join(quarterly_badges)}
-            {f'<span class="q-alert">Missing data</span>' if any_missing else '<span class="q-ok">All received</span>'}
-        </div>
-        """
+        stepper = _quarter_stepper_html(sheets_received, yr, current_year, current_month)
+        metric_cards = "".join(_metric_card_html(m, metrics[m["key"]]) for m in SUMMARY_METRICS)
 
-        # Financial summary read from the saved workbook's Net Capital sheet
-        year_metrics = read_year_metrics(wb_path, yr)
-        metrics_html = _build_metrics_summary_html(year_metrics)
+        # Inline header KPI
+        hdr_nc = _latest_value(metrics["net_capital"])
+        hdr_kpi = (
+            f'<span class="header-kpi">Net Capital <b>{_abbrev(hdr_nc)}</b></span>'
+            if hdr_nc is not None else ''
+        )
 
-        run_rows = []
+        # Run timeline
+        run_items = []
         for r in info["runs"]:
             try:
                 dt = datetime.fromisoformat(r["created_at"])
-                date_str = dt.strftime("%b %d, %Y %I:%M %p").lstrip("0")
+                date_str = dt.strftime("%b %d, %Y · %I:%M %p").replace("· 0", "· ")
             except Exception:
                 date_str = r.get("created_at", "")
             orig = r.get("original_filename", "")
             period = r.get("period_label", "")
-            credit_sheet = r.get("credit_sheet", "")
-            run_rows.append(f"""
-            <div class="file-row run-row" data-period="{html.escape(period.lower())}" data-file="{html.escape(orig.lower())}">
-                <div class="file-info">
-                    <div class="file-name" style="font-size:0.875rem;">{html.escape(orig)}</div>
-                    <div class="file-meta">
-                        <span>{html.escape(date_str)}</span>
-                        {f'<span class="dot">·</span><span>{html.escape(period)}</span>' if period else ''}
-                        {f'<span class="dot">·</span><span style="color:var(--pc-blue);">{html.escape(credit_sheet)}</span>' if credit_sheet else ''}
+            audit = r.get("audit_filename", "")
+            audit_btn = (
+                f'<a class="timeline-audit" href="/download-audit/{html.escape(audit)}">Audit</a>'
+                if audit and (AUDIT_DIR / audit).exists() else ""
+            )
+            run_items.append(f"""
+            <div class="timeline-item run-row" data-period="{html.escape(period.lower())}" data-file="{html.escape(orig.lower())}">
+                <div class="timeline-dot"></div>
+                <div class="timeline-body">
+                    <div class="timeline-head">
+                        <span class="timeline-period">{html.escape(period) or 'Unknown period'}</span>
+                        {audit_btn}
                     </div>
+                    <div class="timeline-file">{html.escape(orig)}</div>
+                    <div class="timeline-date">{html.escape(date_str)}</div>
                 </div>
             </div>
             """)
 
+        collapsed = "" if idx == 0 else "collapsed"  # newest year open by default
+        alert_chip = '<span class="header-alert">! Missing quarter</span>' if any_missing else \
+                     '<span class="header-ok">&#10003; On track</span>'
+
         year_cards_html += f"""
-        <div class="year-card collapsed" data-year="{yr}">
+        <div class="year-card {collapsed}" data-year="{yr}">
             <div class="year-header" onclick="toggleYear(this)">
-                <div style="display:flex;align-items:center;gap:12px;">
+                <div class="year-header-left">
                     <span class="chevron">&#9656;</span>
-                    <span style="font-size:1.35rem;font-weight:800;color:var(--pc-blue-dark);">{yr}</span>
-                    <span class="muted" style="font-size:0.8rem;">{len(info['runs'])} run{"s" if len(info["runs"]) != 1 else ""}</span>
-                    {f'<span class="header-alert">! Missing</span>' if any_missing else ''}
+                    <span class="year-num">{yr}</span>
+                    <span class="year-runs-count">{len(info['runs'])} filing{'s' if len(info['runs']) != 1 else ''}</span>
+                    {alert_chip}
+                    {hdr_kpi}
                 </div>
                 <span onclick="event.stopPropagation();">{dl_btn}</span>
             </div>
             <div class="year-body">
-                {quarterly_html}
-                {metrics_html}
-                <div class="year-runs">{"".join(run_rows)}</div>
+                <div class="section-block">
+                    <div class="section-title">Quarterly Filing Tracker
+                        <span class="section-hint">FOCUS reports are due for Q1–Q4. Missing past quarters are flagged.</span>
+                    </div>
+                    {stepper}
+                </div>
+                <div class="section-block">
+                    <div class="section-title">Financial Position
+                        <span class="section-hint">Pulled live from the Net Capital sheet. Bars highlight quarter-end months.</span>
+                    </div>
+                    <div class="metrics-summary">{metric_cards}</div>
+                </div>
+                <div class="section-block">
+                    <div class="section-title">Filing History
+                        <span class="section-hint">{len(info['runs'])} PDF{'s' if len(info['runs']) != 1 else ''} processed into this workbook.</span>
+                    </div>
+                    <div class="timeline">{"".join(run_items)}</div>
+                </div>
             </div>
         </div>
         """
 
     if not year_cards_html:
         year_cards_html = '<div class="empty-state"><p style="margin:0;">No reports on file yet.</p></div>'
+        overview_html = ""
 
     return f"""
 <!doctype html>
 <html>
 {head_html(f"{html.escape(customer['name'])} | Phillip Capital Risk Management")}
-<style>
-  .year-card {{
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    margin-bottom: 16px;
-    overflow: hidden;
-  }}
-  .year-runs {{ padding: 0 20px; }}
-  .year-card .file-row:last-child {{ border-bottom: none; }}
-
-  .year-header {{
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 20px;
-    background: var(--pc-blue-soft);
-    border-radius: 10px 10px 0 0;
-    cursor: pointer;
-    user-select: none;
-    transition: background 0.15s;
-  }}
-  .year-header:hover {{ filter: brightness(0.98); }}
-  .chevron {{
-    display: inline-block;
-    transition: transform 0.18s ease;
-    color: var(--pc-blue);
-    font-size: 0.9rem;
-  }}
-  .year-card.collapsed .year-header {{ border-radius: 10px; }}
-  .year-card:not(.collapsed) .chevron {{ transform: rotate(90deg); }}
-  .year-body {{
-    max-height: 4000px;
-    overflow: hidden;
-    transition: max-height 0.3s ease;
-  }}
-  .year-card.collapsed .year-body {{ max-height: 0; }}
-  .header-alert {{
-    font-size: 0.7rem;
-    font-weight: 700;
-    color: #b91c1c;
-    background: #fee2e2;
-    padding: 2px 9px;
-    border-radius: 10px;
-  }}
-  .expand-toggle {{ font-weight: 600; }}
-
-  /* Financial summary */
-  .metrics-summary {{
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 14px;
-    padding: 18px 20px;
-    background: linear-gradient(180deg, var(--pc-blue-soft) 0%, transparent 100%);
-    border-bottom: 1px solid var(--border);
-  }}
-  .metric-card {{
-    background: var(--bg, #fff);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 14px 16px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  }}
-  .metric-label {{
-    font-size: 0.72rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
-    margin-bottom: 6px;
-  }}
-  .metric-current {{
-    font-size: 1.45rem;
-    font-weight: 800;
-    color: var(--text);
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    flex-wrap: wrap;
-  }}
-  .metric-delta {{
-    font-size: 0.78rem;
-    font-weight: 700;
-    padding: 1px 8px;
-    border-radius: 10px;
-  }}
-  .delta-up {{ color: #065f46; background: #d1fae5; }}
-  .delta-down {{ color: #991b1b; background: #fee2e2; }}
-  .delta-flat {{ color: #6b7280; background: #f3f4f6; }}
-  .metric-since {{
-    font-size: 0.74rem;
-    color: var(--muted);
-    margin: 4px 0 12px;
-  }}
-  .bar-chart {{
-    display: flex;
-    align-items: flex-end;
-    gap: 6px;
-    height: 90px;
-  }}
-  .bar-col {{
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-end;
-    height: 100%;
-    min-width: 0;
-  }}
-  .bar-val {{
-    font-size: 0.6rem;
-    font-weight: 700;
-    color: var(--muted);
-    margin-bottom: 3px;
-    white-space: nowrap;
-  }}
-  .bar {{
-    width: 100%;
-    max-width: 26px;
-    border-radius: 4px 4px 0 0;
-    transition: opacity 0.15s;
-  }}
-  .bar:hover {{ opacity: 0.8; }}
-  .bar-pos {{ background: linear-gradient(180deg, var(--pc-blue) 0%, var(--pc-blue-dark) 100%); }}
-  .bar-neg {{ background: linear-gradient(180deg, #f87171 0%, #b91c1c 100%); }}
-  .bar-month {{
-    font-size: 0.62rem;
-    color: var(--muted);
-    margin-top: 4px;
-  }}
-
-  .search-bar {{
-    display: flex;
-    gap: 10px;
-    margin-bottom: 20px;
-    flex-wrap: wrap;
-  }}
-  .search-bar input {{
-    flex: 1;
-    min-width: 200px;
-    padding: 8px 14px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    font-size: 0.9rem;
-    outline: none;
-    background: var(--bg);
-    color: var(--text);
-  }}
-  .search-bar input:focus {{ border-color: var(--pc-blue); }}
-  .filter-pills {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
-  .pill {{
-    padding: 5px 14px;
-    border-radius: 20px;
-    border: 1px solid var(--border);
-    font-size: 0.8rem;
-    cursor: pointer;
-    background: var(--bg);
-    color: var(--text);
-    transition: background 0.15s, color 0.15s;
-    user-select: none;
-  }}
-  .pill.active {{
-    background: var(--pc-blue);
-    color: #fff;
-    border-color: var(--pc-blue);
-  }}
-  .year-card.hidden {{ display: none; }}
-  .run-row.hidden {{ display: none; }}
-
-  .quarterly-summary {{
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    padding: 10px 20px;
-    background: var(--surface, #fafafa);
-    border-bottom: 1px solid var(--border);
-    font-size: 0.8rem;
-  }}
-  .q-label {{
-    font-weight: 600;
-    color: var(--muted);
-    margin-right: 4px;
-  }}
-  .q-badge {{
-    padding: 3px 10px;
-    border-radius: 12px;
-    font-size: 0.78rem;
-    font-weight: 600;
-  }}
-  .q-received {{
-    background: #d1fae5;
-    color: #065f46;
-  }}
-  .q-missing {{
-    background: #fee2e2;
-    color: #991b1b;
-  }}
-  .q-future {{
-    background: #f3f4f6;
-    color: #9ca3af;
-  }}
-  .q-alert {{
-    margin-left: auto;
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: #b91c1c;
-    background: #fee2e2;
-    padding: 2px 10px;
-    border-radius: 10px;
-  }}
-  .q-ok {{
-    margin-left: auto;
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: #065f46;
-    background: #d1fae5;
-    padding: 2px 10px;
-    border-radius: 10px;
-  }}
-</style>
+{_detail_styles()}
 <body>
 <div class="shell">
     {topbar_html("customers", user)}
-    {hero_html(customer['name'], "All processed workbooks for this firm.")}
+    {hero_html(customer['name'], "Customer account — quarterly filings, net capital position, and full processing history.")}
     <div class="card">
-        <div style="margin-bottom:14px;">
-            <a href="/customers" style="color:var(--pc-blue);text-decoration:none;font-size:0.875rem;">&larr; All Customers</a>
+        <div style="margin-bottom:16px;">
+            <a href="/customers" style="color:var(--pc-blue);text-decoration:none;font-size:0.875rem;font-weight:600;">&larr; All Customers</a>
         </div>
 
-        <div class="search-bar">
-            <input type="text" id="searchInput" placeholder="Search by filename or period (e.g. March, 2025)&hellip;" oninput="applyFilters()">
+        {overview_html}
+
+        <div class="controls-bar">
+            <input type="text" id="searchInput" placeholder="Search filings by name or period (e.g. March, 2025)&hellip;" oninput="applyFilters()">
             <div class="filter-pills" id="yearPills">
                 <span class="pill active" data-year="all" onclick="setPill(this)">All Years</span>
                 {"".join(f'<span class="pill" data-year="{yr}" onclick="setPill(this)">{yr}</span>' for yr in all_years)}
             </div>
-            <span class="pill expand-toggle" onclick="toggleAll(this)" data-state="collapsed">Expand all</span>
+            <span class="pill expand-toggle" onclick="toggleAll(this)" data-state="mixed">Expand all</span>
         </div>
 
         <div id="yearList">
@@ -575,15 +469,13 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
 <script>
 let activeYear = "all";
 
-function toggleYear(headerEl) {{
-    headerEl.closest(".year-card").classList.toggle("collapsed");
+function toggleYear(el) {{
+    el.closest(".year-card").classList.toggle("collapsed");
 }}
 
 function toggleAll(el) {{
-    const expanding = el.dataset.state === "collapsed";
-    document.querySelectorAll("#yearList .year-card").forEach(card => {{
-        card.classList.toggle("collapsed", !expanding);
-    }});
+    const expanding = el.dataset.state !== "expanded";
+    document.querySelectorAll("#yearList .year-card").forEach(c => c.classList.toggle("collapsed", !expanding));
     el.dataset.state = expanding ? "expanded" : "collapsed";
     el.textContent = expanding ? "Collapse all" : "Expand all";
 }}
@@ -599,28 +491,188 @@ function applyFilters() {{
     const q = document.getElementById("searchInput").value.trim().toLowerCase();
     document.querySelectorAll("#yearList .year-card").forEach(card => {{
         const yr = card.dataset.year;
-        const yearMatch = activeYear === "all" || activeYear === yr;
-        if (!yearMatch) {{ card.classList.add("hidden"); return; }}
+        if (activeYear !== "all" && activeYear !== yr) {{ card.classList.add("hidden"); return; }}
         if (!q) {{
             card.classList.remove("hidden");
             card.querySelectorAll(".run-row").forEach(r => r.classList.remove("hidden"));
             return;
         }}
-        let anyVisible = false;
+        let any = false;
         card.querySelectorAll(".run-row").forEach(row => {{
-            const text = (row.dataset.period + " " + row.dataset.file + " " + yr);
-            if (text.includes(q)) {{ row.classList.remove("hidden"); anyVisible = true; }}
+            const text = row.dataset.period + " " + row.dataset.file + " " + yr;
+            if (text.includes(q)) {{ row.classList.remove("hidden"); any = true; }}
             else {{ row.classList.add("hidden"); }}
         }});
-        if (anyVisible) {{
-            card.classList.remove("hidden");
-            card.classList.remove("collapsed");  // auto-expand matches while searching
-        }} else {{
-            card.classList.add("hidden");
-        }}
+        if (any) {{ card.classList.remove("hidden", "collapsed"); }}
+        else {{ card.classList.add("hidden"); }}
     }});
 }}
 </script>
 </body>
 </html>
+    """
+
+
+def _detail_styles() -> str:
+    return """
+<style>
+  /* Account overview */
+  .overview {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+  .kpi {
+    background: linear-gradient(165deg, #fff 0%, var(--pc-blue-soft) 140%);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px 18px;
+    position: relative;
+    overflow: hidden;
+  }
+  .kpi::before {
+    content: "";
+    position: absolute; top: 0; left: 0;
+    width: 4px; height: 100%;
+    background: var(--pc-blue);
+  }
+  .kpi.kpi-good::before { background: #10b981; }
+  .kpi.kpi-warn::before { background: var(--pc-orange); }
+  .kpi.kpi-bad::before  { background: #ef4444; }
+  .kpi-label {
+    font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--muted); margin-bottom: 8px;
+  }
+  .kpi-value { font-size: 1.9rem; font-weight: 850; color: var(--pc-blue-dark); line-height: 1; letter-spacing: -0.02em; }
+  .kpi-value.sm { font-size: 1.25rem; }
+  .kpi-sub { font-size: 0.72rem; color: var(--muted); margin-top: 6px; }
+  .kpi.kpi-good .kpi-value { color: #047857; }
+  .kpi.kpi-warn .kpi-value { color: var(--pc-orange-dark); }
+  .kpi.kpi-bad .kpi-value  { color: #b91c1c; }
+
+  /* Controls */
+  .controls-bar {
+    display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center;
+  }
+  .controls-bar input {
+    flex: 1; min-width: 220px; padding: 9px 14px;
+    border: 1px solid var(--border); border-radius: 9px;
+    font-size: 0.9rem; outline: none; background: var(--bg); color: var(--text);
+  }
+  .controls-bar input:focus { border-color: var(--pc-blue); box-shadow: 0 0 0 3px rgba(0,59,127,.1); }
+  .filter-pills { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .pill {
+    padding: 6px 15px; border-radius: 20px; border: 1px solid var(--border);
+    font-size: 0.8rem; cursor: pointer; background: var(--bg); color: var(--text);
+    transition: all 0.15s; user-select: none; font-weight: 600;
+  }
+  .pill:hover { border-color: var(--pc-blue); }
+  .pill.active { background: var(--pc-blue); color: #fff; border-color: var(--pc-blue); }
+  .expand-toggle { margin-left: auto; }
+
+  /* Year panels */
+  .year-card {
+    border: 1px solid var(--border); border-radius: 14px;
+    margin-bottom: 18px; overflow: hidden; background: #fff;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .year-card.hidden { display: none; }
+  .year-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 22px; cursor: pointer; user-select: none;
+    background: linear-gradient(90deg, var(--pc-blue-soft) 0%, #fff 100%);
+    border-bottom: 1px solid var(--border);
+  }
+  .year-card.collapsed .year-header { border-bottom: none; }
+  .year-header:hover { filter: brightness(0.985); }
+  .year-header-left { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .chevron { display: inline-block; transition: transform 0.2s ease; color: var(--pc-blue); font-size: 0.95rem; }
+  .year-card:not(.collapsed) .chevron { transform: rotate(90deg); }
+  .year-num { font-size: 1.5rem; font-weight: 850; color: var(--pc-blue-dark); letter-spacing: -0.02em; }
+  .year-runs-count { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+  .header-kpi { font-size: 0.8rem; color: var(--muted); }
+  .header-kpi b { color: var(--pc-blue-dark); font-weight: 800; }
+  .header-alert { font-size: 0.7rem; font-weight: 700; color: #b91c1c; background: #fee2e2; padding: 3px 10px; border-radius: 11px; }
+  .header-ok { font-size: 0.7rem; font-weight: 700; color: #047857; background: #d1fae5; padding: 3px 10px; border-radius: 11px; }
+
+  .year-body { max-height: 6000px; overflow: hidden; transition: max-height 0.35s ease; }
+  .year-card.collapsed .year-body { max-height: 0; }
+
+  .section-block { padding: 20px 22px; border-bottom: 1px solid var(--border); }
+  .section-block:last-child { border-bottom: none; }
+  .section-title {
+    font-size: 0.95rem; font-weight: 800; color: var(--pc-blue-dark);
+    margin-bottom: 16px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  }
+  .section-hint { font-size: 0.74rem; font-weight: 500; color: var(--muted); }
+
+  /* Quarter stepper */
+  .stepper { display: flex; align-items: flex-start; gap: 0; }
+  .step { display: flex; flex-direction: column; align-items: center; text-align: center; min-width: 80px; }
+  .step-dot {
+    width: 38px; height: 38px; border-radius: 50%; display: flex;
+    align-items: center; justify-content: center; font-weight: 800;
+    font-size: 1.05rem; color: #fff; border: 3px solid #fff;
+    box-shadow: 0 0 0 1px var(--border);
+  }
+  .step-done .step-dot    { background: #10b981; box-shadow: 0 0 0 1px #10b981; }
+  .step-missing .step-dot { background: #ef4444; box-shadow: 0 0 0 1px #ef4444; }
+  .step-future .step-dot  { background: #cbd5e1; color: #64748b; box-shadow: 0 0 0 1px #cbd5e1; }
+  .step-name { font-size: 0.78rem; font-weight: 700; color: var(--text); margin-top: 8px; }
+  .step-status { font-size: 0.68rem; color: var(--muted); margin-top: 2px; }
+  .step-done .step-status    { color: #047857; }
+  .step-missing .step-status { color: #b91c1c; }
+  .step-line { flex: 1; height: 3px; background: var(--border); margin-top: 18px; border-radius: 2px; min-width: 20px; }
+
+  /* Metric cards */
+  .metrics-summary {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px;
+  }
+  .metric-card {
+    background: #f8fafc; border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px;
+  }
+  .metric-card.empty { background: #fafbfc; }
+  .metric-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .metric-label { font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .metric-info {
+    width: 16px; height: 16px; border-radius: 50%; background: var(--border); color: #fff;
+    font-size: 0.68rem; font-weight: 800; display: flex; align-items: center; justify-content: center;
+    cursor: help;
+  }
+  .metric-current { font-size: 1.5rem; font-weight: 850; color: var(--pc-blue-dark); letter-spacing: -0.02em; line-height: 1.1; }
+  .metric-deltarow { display: flex; align-items: center; gap: 8px; margin: 6px 0 14px; flex-wrap: wrap; }
+  .metric-delta { font-size: 0.76rem; font-weight: 800; padding: 2px 9px; border-radius: 11px; }
+  .delta-up { color: #047857; background: #d1fae5; }
+  .delta-down { color: #b91c1c; background: #fee2e2; }
+  .delta-flat { color: #6b7280; background: #eef0f3; }
+  .metric-since { font-size: 0.74rem; color: var(--muted); }
+  .metric-desc { font-size: 0.72rem; color: var(--muted); margin-top: 10px; line-height: 1.4; }
+
+  .bar-chart { display: flex; align-items: flex-end; gap: 7px; height: 96px; }
+  .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
+  .bar-val { font-size: 0.6rem; font-weight: 800; color: var(--muted); margin-bottom: 4px; white-space: nowrap; }
+  .bar { width: 100%; max-width: 30px; border-radius: 5px 5px 0 0; transition: opacity 0.15s; }
+  .bar:hover { opacity: 0.82; }
+  .bar-pos { background: linear-gradient(180deg, #3b82f6 0%, var(--pc-blue) 100%); }
+  .bar-pos.bar-q { background: linear-gradient(180deg, var(--pc-blue) 0%, var(--pc-blue-dark) 100%); }
+  .bar-neg { background: linear-gradient(180deg, #f87171 0%, #b91c1c 100%); }
+  .bar-month { font-size: 0.63rem; color: var(--muted); margin-top: 5px; font-weight: 600; }
+
+  /* Timeline */
+  .timeline { position: relative; padding-left: 6px; }
+  .timeline-item { position: relative; padding: 0 0 18px 24px; border-left: 2px solid var(--border); }
+  .timeline-item:last-child { border-left-color: transparent; padding-bottom: 0; }
+  .timeline-item.hidden { display: none; }
+  .timeline-dot {
+    position: absolute; left: -7px; top: 2px; width: 12px; height: 12px;
+    border-radius: 50%; background: var(--pc-blue); border: 2px solid #fff; box-shadow: 0 0 0 1px var(--pc-blue);
+  }
+  .timeline-head { display: flex; align-items: center; gap: 12px; margin-bottom: 3px; }
+  .timeline-period { font-size: 0.9rem; font-weight: 800; color: var(--pc-blue-dark); }
+  .timeline-audit { font-size: 0.7rem; font-weight: 700; color: var(--pc-blue); text-decoration: none; border: 1px solid var(--border); padding: 1px 9px; border-radius: 10px; }
+  .timeline-audit:hover { background: var(--pc-blue-soft); }
+  .timeline-file { font-size: 0.82rem; color: var(--text); word-break: break-word; }
+  .timeline-date { font-size: 0.72rem; color: var(--muted); margin-top: 2px; }
+</style>
     """
