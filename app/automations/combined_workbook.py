@@ -206,7 +206,27 @@ def add_or_update_net_capital_sheet(
             written += 1
 
     log(f"[NC] Wrote {written} values into column {col}")
+    _reorder_sheets(wb, year)
     return nc_name
+
+
+def _reorder_sheets(wb: Workbook, year: int):
+    """Put 'Net Capital YEAR' first, then credit month sheets in calendar order."""
+    nc = net_capital_sheet_name(year)
+    month_order = {credit_sheet_name(m, year): m for m in range(1, 13)}
+
+    desired: list[str] = []
+    if nc in wb.sheetnames:
+        desired.append(nc)
+    for m in range(1, 13):
+        name = credit_sheet_name(m, year)
+        if name in wb.sheetnames:
+            desired.append(name)
+    # Any sheets for other years: keep them at the end, sorted
+    others = [s for s in wb.sheetnames if s not in desired]
+    desired.extend(others)
+
+    wb._sheets.sort(key=lambda ws: desired.index(ws.title) if ws.title in desired else len(desired))
 
 
 def set_recalc_on_open(wb: Workbook):

@@ -1,4 +1,5 @@
 import html
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -66,6 +67,11 @@ def customers_list_page_html(user: str) -> str:
     """
 
 
+def _year_from_wb_name(wb_name: str) -> int:
+    m = re.search(r"_(\d{4})\.xlsx$", wb_name or "")
+    return int(m.group(1)) if m else 0
+
+
 def customer_detail_page_html(user: str, customer_id: str) -> str:
     customer = get_customer(customer_id)
     if not customer:
@@ -85,108 +91,176 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
         reverse=True,
     )
 
-    # Group reports by workbook file (customer_name_year.xlsx)
-    workbooks: dict[str, dict] = {}
+    # Group by year (derived from workbook filename)
+    years: dict[int, dict] = {}
     for r in reports:
-        wb_name = r.get("output_filename", "")
-        if wb_name not in workbooks:
-            workbooks[wb_name] = {"filename": wb_name, "runs": []}
-        workbooks[wb_name]["runs"].append(r)
+        yr = _year_from_wb_name(r.get("output_filename", ""))
+        if yr not in years:
+            years[yr] = {"workbook_filename": r.get("output_filename", ""), "runs": []}
+        years[yr]["runs"].append(r)
 
-    if not reports:
-        reports_html = """
-        <div class="empty-state">
-            <p style="margin:0;">No reports on file for this customer yet.</p>
-        </div>
-        """
-    else:
-        wb_cards = []
-        for wb_name, wb_info in workbooks.items():
-            wb_path = NET_CAPITAL_DIR / wb_name if wb_name else None
-            wb_exists = wb_path and wb_path.exists()
+    all_years = sorted(years.keys(), reverse=True)  # newest first
 
-            dl_btn = (
-                f'<a class="button-link orange" href="/download-net-capital/{html.escape(wb_name)}">Download Workbook</a>'
-                if wb_exists else
-                '<span class="muted" style="font-size:12px;">File not on disk</span>'
-            )
+    year_cards_html = ""
+    for yr in all_years:
+        info = years[yr]
+        wb_name = info["workbook_filename"]
+        wb_path = NET_CAPITAL_DIR / wb_name if wb_name else None
+        wb_exists = wb_path and wb_path.exists()
+        dl_btn = (
+            f'<a class="button-link orange" href="/download-net-capital/{html.escape(wb_name)}">Download</a>'
+            if wb_exists else
+            '<span class="muted" style="font-size:12px;">File missing</span>'
+        )
 
-            run_rows = []
-            for r in wb_info["runs"]:
-                try:
-                    dt = datetime.fromisoformat(r["created_at"])
-                    date_str = dt.strftime("%b %d, %Y %I:%M %p").lstrip("0")
-                except Exception:
-                    date_str = r.get("created_at", "")
-
-                orig = r.get("original_filename", "")
-                period = r.get("period_label", "")
-                credit_sheet = r.get("credit_sheet", "")
-                nc_sheet = r.get("net_capital_sheet", "")
-                audit_name = r.get("audit_filename", "")
-
-                audit_btn = (
-                    f'<a class="button-link secondary" href="/download-audit/{html.escape(audit_name)}">Audit</a>'
-                    if audit_name and (AUDIT_DIR / audit_name).exists() else ""
-                )
-                sheets_label = ""
-                if credit_sheet or nc_sheet:
-                    parts = []
-                    if credit_sheet:
-                        parts.append(f"Sheet: <em>{html.escape(credit_sheet)}</em>")
-                    if nc_sheet:
-                        parts.append(f"Net Capital: <em>{html.escape(nc_sheet)}</em>")
-                    sheets_label = f'<span class="dot">·</span><span>{" &amp; ".join(parts)}</span>'
-
-                run_rows.append(f"""
-                <div class="file-row">
-                    <div class="file-info">
-                        <div class="file-name">{html.escape(orig)}</div>
-                        <div class="file-meta">
-                            <span>{html.escape(date_str)}</span>
-                            {f'<span class="dot">·</span><span>{html.escape(period)}</span>' if period else ''}
-                            {sheets_label}
-                        </div>
+        run_rows = []
+        for r in info["runs"]:
+            try:
+                dt = datetime.fromisoformat(r["created_at"])
+                date_str = dt.strftime("%b %d, %Y %I:%M %p").lstrip("0")
+            except Exception:
+                date_str = r.get("created_at", "")
+            orig = r.get("original_filename", "")
+            period = r.get("period_label", "")
+            credit_sheet = r.get("credit_sheet", "")
+            run_rows.append(f"""
+            <div class="file-row run-row" data-period="{html.escape(period.lower())}" data-file="{html.escape(orig.lower())}">
+                <div class="file-info">
+                    <div class="file-name" style="font-size:0.875rem;">{html.escape(orig)}</div>
+                    <div class="file-meta">
+                        <span>{html.escape(date_str)}</span>
+                        {f'<span class="dot">·</span><span>{html.escape(period)}</span>' if period else ''}
+                        {f'<span class="dot">·</span><span style="color:var(--pc-blue);">{html.escape(credit_sheet)}</span>' if credit_sheet else ''}
                     </div>
-                    <div class="file-actions">{audit_btn}</div>
                 </div>
-                """)
-
-            wb_cards.append(f"""
-            <div class="single-card" style="flex-direction:column;align-items:stretch;gap:0;padding:0;overflow:hidden;">
-                <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:var(--pc-blue-soft);border-bottom:1px solid var(--border);">
-                    <div>
-                        <div class="folder-name" style="font-weight:700;color:var(--pc-blue-dark);">{html.escape(wb_name or "Unknown workbook")}</div>
-                        <div class="folder-meta" style="font-size:12px;color:var(--muted);">{len(wb_info['runs'])} run(s) in this workbook</div>
-                    </div>
-                    <div>{dl_btn}</div>
-                </div>
-                <div style="padding:0 18px;">{''.join(run_rows)}</div>
             </div>
             """)
 
-        reports_html = '<div class="outputs-list" style="gap:16px;">' + "".join(wb_cards) + "</div>"
+        year_cards_html += f"""
+        <div class="year-card" data-year="{yr}">
+            <div style="display:flex;align-items:center;justify-content:space-between;
+                        padding:14px 20px;background:var(--pc-blue-soft);
+                        border-bottom:1px solid var(--border);border-radius:10px 10px 0 0;">
+                <div>
+                    <span style="font-size:1.35rem;font-weight:800;color:var(--pc-blue-dark);">{yr}</span>
+                    <span class="muted" style="margin-left:10px;font-size:0.8rem;">{len(info['runs'])} run{"s" if len(info["runs"]) != 1 else ""}</span>
+                </div>
+                {dl_btn}
+            </div>
+            <div class="year-runs">{"".join(run_rows)}</div>
+        </div>
+        """
+
+    if not year_cards_html:
+        year_cards_html = '<div class="empty-state"><p style="margin:0;">No reports on file yet.</p></div>'
 
     return f"""
 <!doctype html>
 <html>
 {head_html(f"{html.escape(customer['name'])} | Phillip Capital Risk Management")}
+<style>
+  .year-card {{
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }}
+  .year-runs {{ padding: 0 20px; }}
+  .year-card .file-row:last-child {{ border-bottom: none; }}
+
+  .search-bar {{
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }}
+  .search-bar input {{
+    flex: 1;
+    min-width: 200px;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    outline: none;
+    background: var(--bg);
+    color: var(--text);
+  }}
+  .search-bar input:focus {{ border-color: var(--pc-blue); }}
+  .filter-pills {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
+  .pill {{
+    padding: 5px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    cursor: pointer;
+    background: var(--bg);
+    color: var(--text);
+    transition: background 0.15s, color 0.15s;
+    user-select: none;
+  }}
+  .pill.active {{
+    background: var(--pc-blue);
+    color: #fff;
+    border-color: var(--pc-blue);
+  }}
+  .year-card.hidden {{ display: none; }}
+  .run-row.hidden {{ display: none; }}
+</style>
 <body>
 <div class="shell">
     {topbar_html("customers", user)}
-    {hero_html(customer['name'], "Customer account — all processed reports for this firm.")}
+    {hero_html(customer['name'], "All processed workbooks for this firm.")}
     <div class="card">
-        <div style="margin-bottom:12px;">
-            <a href="/customers" style="color:var(--pc-blue);text-decoration:none;font-size:0.875rem;">
-                &larr; All Customers
-            </a>
+        <div style="margin-bottom:14px;">
+            <a href="/customers" style="color:var(--pc-blue);text-decoration:none;font-size:0.875rem;">&larr; All Customers</a>
         </div>
-        <h2>Workbooks &amp; Runs</h2>
-        <p class="muted">Each workbook groups monthly credit sheets and an accumulating Net Capital sheet for one year.
-        Clicking Download gives you the complete combined Excel file.</p>
-        {reports_html}
+
+        <div class="search-bar">
+            <input type="text" id="searchInput" placeholder="Search by filename or period (e.g. March, 2025)&hellip;" oninput="applyFilters()">
+            <div class="filter-pills" id="yearPills">
+                <span class="pill active" data-year="all" onclick="setPill(this)">All Years</span>
+                {"".join(f'<span class="pill" data-year="{yr}" onclick="setPill(this)">{yr}</span>' for yr in all_years)}
+            </div>
+        </div>
+
+        <div id="yearList">
+            {year_cards_html}
+        </div>
     </div>
 </div>
+
+<script>
+let activeYear = "all";
+
+function setPill(el) {{
+    document.querySelectorAll("#yearPills .pill").forEach(p => p.classList.remove("active"));
+    el.classList.add("active");
+    activeYear = el.dataset.year;
+    applyFilters();
+}}
+
+function applyFilters() {{
+    const q = document.getElementById("searchInput").value.trim().toLowerCase();
+    document.querySelectorAll("#yearList .year-card").forEach(card => {{
+        const yr = card.dataset.year;
+        const yearMatch = activeYear === "all" || activeYear === yr;
+        if (!yearMatch) {{ card.classList.add("hidden"); return; }}
+        if (!q) {{
+            card.classList.remove("hidden");
+            card.querySelectorAll(".run-row").forEach(r => r.classList.remove("hidden"));
+            return;
+        }}
+        let anyVisible = false;
+        card.querySelectorAll(".run-row").forEach(row => {{
+            const text = (row.dataset.period + " " + row.dataset.file + " " + yr);
+            if (text.includes(q)) {{ row.classList.remove("hidden"); anyVisible = true; }}
+            else {{ row.classList.add("hidden"); }}
+        }});
+        if (anyVisible) card.classList.remove("hidden");
+        else card.classList.add("hidden");
+    }});
+}}
+</script>
 </body>
 </html>
     """
