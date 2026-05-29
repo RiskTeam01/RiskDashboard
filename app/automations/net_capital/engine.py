@@ -100,21 +100,85 @@ class NetCapitalEngine:
         self.debug_lines.append(f"[{ts}] {msg}")
 
     def extract_company_name(self, all_words: list) -> str:
-        """Extract text near code 13 (company name) to the RIGHT of the code."""
-        text = _extract_text_near_code(all_words, "13")
-        self.log(f"[CODE 13] Company name raw: '{text}'")
-        return text.strip()
+        """Extract company name from the FOCUS cover page.
+        In FOCUS reports the code '13' sits at the right end of the firm-name row;
+        the company name is to the LEFT of code 13 on the same row."""
+        y_tolerance = 5.75
+        page1_words = [w for w in all_words if w.page_index == 0]
+        for word in page1_words:
+            normalized = str(word.text).strip().replace(".", "").replace("(", "").replace(")", "")
+            if normalized != "13":
+                continue
+            same_row_left = [
+                w for w in page1_words
+                if w.x1 <= word.x0
+                and abs(w.y_center - word.y_center) <= y_tolerance
+            ]
+            same_row_left.sort(key=lambda w: w.x0)
+            name = " ".join(w.text for w in same_row_left).strip()
+            if name:
+                self.log(f"[CODE 13] Company name raw (left of code 13 on page 1): '{name}'")
+                return name
+        # fallback: search all pages
+        for word in all_words:
+            normalized = str(word.text).strip().replace(".", "").replace("(", "").replace(")", "")
+            if normalized != "13":
+                continue
+            same_page = [w for w in all_words if w.page_index == word.page_index]
+            row_left = [
+                w for w in same_page
+                if w.x1 <= word.x0
+                and abs(w.y_center - word.y_center) <= y_tolerance
+            ]
+            row_left.sort(key=lambda w: w.x0)
+            name = " ".join(w.text for w in row_left).strip()
+            if name:
+                self.log(f"[CODE 13] Company name raw (fallback): '{name}'")
+                return name
+        self.log("[CODE 13] Could not find code 13 in document.")
+        return ""
 
     def extract_period_end_date(self, all_words: list) -> Optional[str]:
-        """Extract text near code 25 (period ending date)."""
-        text = _extract_text_near_code(all_words, "25")
-        self.log(f"[CODE 25] Period end date raw: '{text}'")
-        if not text:
-            return None
-        m = re.search(r"\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2}", text)
-        if m:
-            return m.group(0)
-        return text.strip() or None
+        """Extract period end date from page 1 of the FOCUS cover page.
+        The cover page always has the dates on page 1. Code 25 can appear
+        as a line-item number on later pages, so we restrict to page 1 and
+        look for the date to the right of code 25, or fall back to the last
+        date-like token on page 1."""
+        y_tolerance = 5.75
+        page1_words = [w for w in all_words if w.page_index == 0]
+
+        # Look for code 25 on page 1 and grab a date to its right
+        for word in page1_words:
+            normalized = str(word.text).strip().replace(".", "")
+            if normalized != "25":
+                continue
+            row_right = [
+                w for w in page1_words
+                if w.x0 > word.x1
+                and abs(w.y_center - word.y_center) <= y_tolerance
+            ]
+            row_right.sort(key=lambda w: w.x0)
+            for rw in row_right:
+                m = re.search(r"\d{1,2}/\d{1,2}/\d{2,4}", rw.text)
+                if m:
+                    self.log(f"[CODE 25] Period end date from page 1 code 25: '{m.group(0)}'")
+                    return m.group(0)
+
+        # Fallback: collect all date-like tokens on page 1 and return the last one
+        # (period beginning comes before period ending in the cover page layout)
+        dates_on_p1 = []
+        for word in page1_words:
+            m = re.search(r"\d{1,2}/\d{1,2}/\d{2,4}", word.text)
+            if m:
+                dates_on_p1.append((word.x0, word.y0, m.group(0)))
+        if dates_on_p1:
+            dates_on_p1.sort(key=lambda t: (t[1], t[0]))  # sort by y then x
+            end_date = dates_on_p1[-1][2]
+            self.log(f"[CODE 25] Period end date fallback (last date on page 1): '{end_date}'")
+            return end_date
+
+        self.log("[CODE 25] Could not find period end date on page 1.")
+        return None
 
     def determine_month(self, date_text: str) -> Optional[int]:
         month = _extract_month_from_date_text(date_text)
