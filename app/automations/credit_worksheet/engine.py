@@ -33,6 +33,7 @@ AMOUNT_PATTERN = re.compile(
 class CreditWorksheetEngine:
     def __init__(self):
         self.debug_lines: list[str] = []
+        self.all_words: list = []  # populated after extract_pdf_field_results
 
     def log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -138,6 +139,7 @@ class CreditWorksheetEngine:
                     self.log(f"[WARN] Failed parsing word on page {page_index + 1}: {e}")
 
         doc.close()
+        self.all_words = all_words
 
         readability = self.calculate_readability(
             page_count=page_count,

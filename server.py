@@ -5,6 +5,7 @@ from app.config import ASSETS_DIR, ensure_directories
 from app.auth import seed_preset_users
 from app.cleanup import run_age_based_cleanup
 from app.routes import auth, pages, settings, api, batch, downloads
+from app.routes import customers
 
 app = FastAPI(
     title="PhillipCapital Risk Management Credit Worksheet Processor",
@@ -31,6 +32,7 @@ app.include_router(settings.router)
 app.include_router(api.router)
 app.include_router(batch.router)
 app.include_router(downloads.router)
+app.include_router(customers.router)
 
 if __name__ == "__main__":
     import uvicorn

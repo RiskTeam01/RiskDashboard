@@ -486,6 +486,21 @@ def base_css() -> str:
         .spinner { width: 42px; height: 42px; border: 5px solid #e2e8f0; border-top-color: var(--pc-orange); border-radius: 50%; margin: 0 auto 14px auto; animation: spin 1s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
 
+        /* Customer pages */
+        .customer-list { display: flex; flex-direction: column; gap: 10px; }
+        .customer-card {
+            display: flex; flex-direction: column; gap: 4px;
+            padding: 14px 18px;
+            border: 1.5px solid var(--border);
+            border-radius: 10px;
+            background: var(--card);
+            text-decoration: none; color: inherit;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .customer-card:hover { border-color: var(--pc-blue); box-shadow: 0 4px 14px rgba(15,23,42,0.07); }
+        .customer-name { font-weight: 700; color: var(--pc-blue-dark); font-size: 15px; }
+        .customer-meta { font-size: 13px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+
         @media (max-width: 900px) {
             body { padding: 14px; }
             .brand-logo { height: 58px; max-width: 140px; }
