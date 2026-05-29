@@ -134,11 +134,14 @@ def add_credit_month_sheet(
     for result in field_results:
         if result.status == "MISSING":
             raise RuntimeError(f"Cannot write missing field: {result.expression} {result.label}")
+        cell = ws[result.excel_cell]
         if result.should_write_blank:
-            ws[result.excel_cell].value = None
+            cell.value = None
             log(f"[CW]   {result.excel_cell}: {result.expression} -> BLANK")
         else:
-            ws[result.excel_cell].value = result.numeric_value
+            cell.value = result.numeric_value
+            if isinstance(result.numeric_value, (int, float)):
+                cell.number_format = "#,##0.##"
             log(f"[CW]   {result.excel_cell}: {result.expression} -> {result.display_value}")
 
     return sheet_name
@@ -196,12 +199,19 @@ def add_or_update_net_capital_sheet(
 
     written = 0
     for row_num, code in row_map.items():
+        # Always write the helper code into column B as a reference label
+        b_cell = ws[f"B{row_num}"]
+        if b_cell.value is None or str(b_cell.value).strip() == "":
+            b_cell.value = code
+
         occs = occurrences_by_code.get(code, [])
         if not occs:
             continue
         sel = next((o for o in occs if o.selected), occs[0])
         val = _parse_amount(sel.nearby_amount_text) if sel.nearby_amount_text else None
-        ws[f"{col}{row_num}"] = val
+        data_cell = ws[f"{col}{row_num}"]
+        data_cell.value = val
+        data_cell.number_format = "#,##0"
         if val is not None:
             written += 1
 
