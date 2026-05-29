@@ -236,3 +236,35 @@ def set_recalc_on_open(wb: Workbook):
         wb.calculation.calcMode = "auto"
     except Exception:
         pass
+
+
+def autofit_columns(wb: Workbook, min_width: float = 10.0, max_width: float = 50.0):
+    """Widen any column that is too narrow to display its contents."""
+    for ws in wb.worksheets:
+        for col_cells in ws.columns:
+            col_letter = col_cells[0].column_letter
+            best = ws.column_dimensions[col_letter].width or 0
+            for cell in col_cells:
+                if cell.value is None:
+                    continue
+                # Estimate rendered width: numeric values need room for formatting
+                val = cell.value
+                if isinstance(val, (int, float)):
+                    fmt = cell.number_format or ""
+                    # Use the formatted string length as a proxy
+                    try:
+                        if "%" in fmt:
+                            text = f"{val * 100:.2f}%"
+                        elif "," in fmt or "#" in fmt:
+                            text = f"{val:,.2f}"
+                        else:
+                            text = str(val)
+                    except Exception:
+                        text = str(val)
+                else:
+                    text = str(val)
+                best = max(best, len(text) + 2)
+            # Only widen, never shrink — keeps intentionally narrow label columns tidy
+            current = ws.column_dimensions[col_letter].width or 0
+            if best > current:
+                ws.column_dimensions[col_letter].width = min(max(best, min_width), max_width)
