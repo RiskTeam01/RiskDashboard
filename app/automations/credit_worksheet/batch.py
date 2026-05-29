@@ -113,10 +113,14 @@ def run_batch_job(job_id: str):
             )
 
             # Detect customer from code 13 (company name) using all_words from engine
+            engine.log("")
+            engine.log("=" * 100)
+            engine.log("[NET CAPITAL AUTOMATION]")
             nc_engine = NetCapitalEngine()
             company_name = nc_engine.extract_company_name(engine.all_words)
             customer = find_or_create_customer(company_name or "Unknown")
             customer_id = customer["id"]
+            engine.log(f"[CUSTOMER] Matched/created account: '{customer['name']}' (id={customer_id})")
 
             # Run Net Capital automation
             nc_workbook_path = None
@@ -128,7 +132,14 @@ def run_batch_job(job_id: str):
                     customer_name=customer["name"],
                 )
             except Exception as nc_err:
-                engine.log(f"[NET CAPITAL] Error: {nc_err}")
+                nc_engine.log(f"[NET CAPITAL] Error: {nc_err}")
+            # Surface Net Capital log inside the main console output
+            engine.debug_lines.extend(nc_engine.debug_lines)
+            if nc_workbook_path:
+                engine.log(f"[NET CAPITAL] Workbook ready: {nc_workbook_path.name}")
+            else:
+                engine.log("[NET CAPITAL] No workbook produced (see messages above).")
+            engine.log("=" * 100)
 
             # File report under customer account
             add_report_to_customer(
