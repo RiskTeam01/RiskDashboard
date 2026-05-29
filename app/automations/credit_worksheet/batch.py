@@ -19,7 +19,7 @@ from app.automations.net_capital.fields import NET_CAPITAL_ROW_MAP, MONTH_COLUMN
 from app.automations.combined_workbook import (
     customer_workbook_path, open_or_create,
     add_credit_month_sheet, add_or_update_net_capital_sheet,
-    set_recalc_on_open,
+    set_recalc_on_open, autofit_columns,
 )
 from app.customers import find_or_create_customer, add_report_to_customer
 from app.config import NET_CAPITAL_DIR, detect_backend_template
@@ -182,6 +182,7 @@ def run_batch_job(job_id: str):
             )
 
             set_recalc_on_open(wb)
+            autofit_columns(wb)
             wb.save(wb_path)
             engine.log(f"[WORKBOOK] Saved: {wb_path}")
             engine.debug_lines.extend(nc_engine.debug_lines)
