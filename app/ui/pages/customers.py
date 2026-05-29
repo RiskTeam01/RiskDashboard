@@ -91,6 +91,8 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
         reverse=True,
     )
 
+    QUARTERLY_MONTHS = [("March", 3), ("June", 6), ("September", 9), ("December", 12)]
+
     # Group by year (derived from workbook filename)
     years: dict[int, dict] = {}
     for r in reports:
@@ -100,6 +102,8 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
         years[yr]["runs"].append(r)
 
     all_years = sorted(years.keys(), reverse=True)  # newest first
+    current_year = datetime.now().year
+    current_month = datetime.now().month
 
     year_cards_html = ""
     for yr in all_years:
@@ -112,6 +116,38 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
             if wb_exists else
             '<span class="muted" style="font-size:12px;">File missing</span>'
         )
+
+        # Collect which credit sheets exist for this year
+        sheets_received = {r.get("credit_sheet", "") for r in info["runs"]}
+
+        quarterly_badges = []
+        any_missing = False
+        for month_name, month_num in QUARTERLY_MONTHS:
+            sheet_name = f"{month_name} {yr}"
+            received = sheet_name in sheets_received
+            # Don't flag future quarters as missing
+            is_future = (yr > current_year) or (yr == current_year and month_num > current_month)
+            if received:
+                quarterly_badges.append(
+                    f'<span class="q-badge q-received" title="{sheet_name} received">&#10003; {month_name}</span>'
+                )
+            elif is_future:
+                quarterly_badges.append(
+                    f'<span class="q-badge q-future" title="{sheet_name} not yet due">&ndash; {month_name}</span>'
+                )
+            else:
+                quarterly_badges.append(
+                    f'<span class="q-badge q-missing" title="{sheet_name} missing">&#33; {month_name}</span>'
+                )
+                any_missing = True
+
+        quarterly_html = f"""
+        <div class="quarterly-summary">
+            <span class="q-label">Quarterlies:</span>
+            {"".join(quarterly_badges)}
+            {f'<span class="q-alert">Missing data</span>' if any_missing else '<span class="q-ok">All received</span>'}
+        </div>
+        """
 
         run_rows = []
         for r in info["runs"]:
@@ -147,6 +183,7 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
                 </div>
                 {dl_btn}
             </div>
+            {quarterly_html}
             <div class="year-runs">{"".join(run_rows)}</div>
         </div>
         """
@@ -205,6 +242,58 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
   }}
   .year-card.hidden {{ display: none; }}
   .run-row.hidden {{ display: none; }}
+
+  .quarterly-summary {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 10px 20px;
+    background: var(--surface, #fafafa);
+    border-bottom: 1px solid var(--border);
+    font-size: 0.8rem;
+  }}
+  .q-label {{
+    font-weight: 600;
+    color: var(--muted);
+    margin-right: 4px;
+  }}
+  .q-badge {{
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+  }}
+  .q-received {{
+    background: #d1fae5;
+    color: #065f46;
+  }}
+  .q-missing {{
+    background: #fee2e2;
+    color: #991b1b;
+  }}
+  .q-future {{
+    background: #f3f4f6;
+    color: #9ca3af;
+  }}
+  .q-alert {{
+    margin-left: auto;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #b91c1c;
+    background: #fee2e2;
+    padding: 2px 10px;
+    border-radius: 10px;
+  }}
+  .q-ok {{
+    margin-left: auto;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #065f46;
+    background: #d1fae5;
+    padding: 2px 10px;
+    border-radius: 10px;
+  }}
 </style>
 <body>
 <div class="shell">
