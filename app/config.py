@@ -64,10 +64,13 @@ def detect_backend_template() -> Path:
     candidates = [
         path for path in TEMPLATE_DIR.glob("*.xlsx")
         if not path.name.startswith("~$")
+        and path.name != NET_CAPITAL_TEMPLATE_FILENAME
+        and "Net_Capital" not in path.name
+        and "Net Capital" not in path.name
     ]
     if not candidates:
         raise FileNotFoundError(
-            f"No Excel template found in: {TEMPLATE_DIR}. "
+            f"No Credit Worksheet Excel template found in: {TEMPLATE_DIR}. "
             "Place your blank .xlsx template inside the templates folder."
         )
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
