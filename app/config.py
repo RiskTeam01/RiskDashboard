@@ -13,6 +13,10 @@ AUDIT_DIR = APP_ROOT / "audits"
 
 USERS_FILE = APP_ROOT / "users.json"
 CONFIG_FILE = APP_ROOT / "app_config.json"
+CUSTOMERS_FILE = APP_ROOT / "customers.json"
+NET_CAPITAL_DIR = APP_ROOT / "net_capital"
+NET_CAPITAL_TEMPLATE_FILENAME = "ec28fc95-Net_Capital.xlsx"
+NET_CAPITAL_SHEET_NAME = "Net Capital 2026"
 
 SHEET_NAME = "Sheet1"
 PREFERRED_TEMPLATE_FILENAME = "Buckler Excel Credit WS Template.xlsx"
@@ -29,7 +33,7 @@ DEFAULT_CONFIG = {
 
 
 def ensure_directories():
-    for folder in [TEMPLATE_DIR, UPLOAD_DIR, OUTPUT_DIR, LOG_DIR, ASSETS_DIR, AUDIT_DIR]:
+    for folder in [TEMPLATE_DIR, UPLOAD_DIR, OUTPUT_DIR, LOG_DIR, ASSETS_DIR, AUDIT_DIR, NET_CAPITAL_DIR]:
         folder.mkdir(parents=True, exist_ok=True)
 
 

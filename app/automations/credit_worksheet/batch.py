@@ -13,6 +13,8 @@ from app.utils import (
 )
 from app.automations.credit_worksheet.engine import CreditWorksheetEngine
 from app.automations.credit_worksheet.audit import write_audit_report
+from app.automations.net_capital.engine import NetCapitalEngine
+from app.customers import find_or_create_customer, add_report_to_customer
 
 
 async def stream_save_pdf(
@@ -110,6 +112,34 @@ def run_batch_job(job_id: str):
                 readability_info=readability_info,
             )
 
+            # Detect customer from code 13 (company name) using all_words from engine
+            nc_engine = NetCapitalEngine()
+            company_name = nc_engine.extract_company_name(engine.all_words)
+            customer = find_or_create_customer(company_name or "Unknown")
+            customer_id = customer["id"]
+
+            # Run Net Capital automation
+            nc_workbook_path = None
+            try:
+                nc_workbook_path = nc_engine.run(
+                    all_words=engine.all_words,
+                    occurrences_by_code=occurrences_by_code,
+                    customer_id=customer_id,
+                    customer_name=customer["name"],
+                )
+            except Exception as nc_err:
+                engine.log(f"[NET CAPITAL] Error: {nc_err}")
+
+            # File report under customer account
+            add_report_to_customer(
+                customer_id=customer_id,
+                report_type="credit_worksheet",
+                original_filename=original_filename,
+                output_filename=output_path.name,
+                audit_filename=audit_path.name,
+                net_capital_filename=nc_workbook_path.name if nc_workbook_path else "",
+            )
+
             log_path = engine.save_debug_log(job_id, suffix=f"pdf_{index}")
 
             item_payload = {
@@ -120,6 +150,9 @@ def run_batch_job(job_id: str):
                 "output_path": str(output_path),
                 "output_filename": output_path.name,
                 "audit_filename": audit_path.name,
+                "net_capital_filename": nc_workbook_path.name if nc_workbook_path else "",
+                "customer_id": customer_id,
+                "customer_name": customer["name"],
                 "template": template_status,
                 "readability": readability_info,
                 "summary": summary,
@@ -143,6 +176,8 @@ def run_batch_job(job_id: str):
                 fields_found=metrics["fields_found_label"],
                 needs_review=metrics["needs_review"],
                 valid_blanks=metrics["valid_blanks"],
+                customer_id=customer_id,
+                customer_name=customer["name"],
             )
 
         except Exception as e:

@@ -19,6 +19,7 @@ def nav_html(active: str) -> str:
     home_active = "active" if active == "home" else ""
     console_active = "active" if active == "console" else ""
     outputs_active = "active" if active == "outputs" else ""
+    customers_active = "active" if active == "customers" else ""
     settings_active = "active" if active == "settings" else ""
 
     return f"""
@@ -28,6 +29,7 @@ def nav_html(active: str) -> str:
             <a class="{home_active}" href="/">Home</a>
             <a class="{console_active}" href="/console">Console</a>
             <a class="{outputs_active}" href="/outputs">Outputs</a>
+            <a class="{customers_active}" href="/customers">Customers</a>
             <a class="{settings_active}" href="/settings">Settings</a>
             <a class="logout" href="/logout">Sign out</a>
         </div>
