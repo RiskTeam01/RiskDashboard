@@ -347,11 +347,12 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
         metrics = year_metrics[yr]
 
         # Missing quarters check
-        any_missing = False
+        missing_count = 0
         for mname, mnum in QUARTERLY_MONTHS:
             is_future = (yr > current_year) or (yr == current_year and mnum > current_month)
             if not is_future and f"{mname} {yr}" not in sheets_received:
-                any_missing = True
+                missing_count += 1
+        any_missing = missing_count > 0
 
         stepper = _quarter_stepper_html(sheets_received, yr, current_year, current_month)
         metric_cards = "".join(_metric_card_html(m, metrics[m["key"]]) for m in SUMMARY_METRICS)
@@ -393,8 +394,11 @@ def customer_detail_page_html(user: str, customer_id: str) -> str:
             """)
 
         collapsed = "" if idx == 0 else "collapsed"  # newest year open by default
-        alert_chip = '<span class="header-alert">! Missing quarter</span>' if any_missing else \
-                     '<span class="header-ok">&#10003; On track</span>'
+        alert_chip = (
+            f'<span class="header-alert">! {missing_count} quarter{"s" if missing_count != 1 else ""} missing</span>'
+            if any_missing else
+            '<span class="header-ok">&#10003; On track</span>'
+        )
 
         year_cards_html += f"""
         <div class="year-card {collapsed}" data-year="{yr}">
