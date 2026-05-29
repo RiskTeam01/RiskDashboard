@@ -3,9 +3,10 @@ from urllib.parse import quote
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 
-from app.auth import current_user_or_none, add_user, delete_user, update_password
+from app.auth import current_user_or_none, add_user, delete_user, update_password, authenticate
 from app.config import load_config, save_config, UPLOAD_DIR, OUTPUT_DIR, LOG_DIR, AUDIT_DIR
 from app.cleanup import run_age_based_cleanup, force_clear_directory
+from app.customers import delete_all_customers
 
 router = APIRouter()
 
@@ -105,3 +106,21 @@ def settings_cleanup(request: Request, target: str = Form(...)):
         return settings_redirect(f"Cleared {deleted} output/audit file(s).")
 
     return settings_redirect("Unknown cleanup target.", "err")
+
+
+@router.post("/settings/delete-all-customers")
+def settings_delete_all_customers(request: Request, password: str = Form(...)):
+    user = current_user_or_none(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    # Require the signed-in user's own password to authorize this destructive action.
+    if not authenticate(user, password):
+        return settings_redirect("Incorrect password. No customer data was deleted.", "err")
+
+    result = delete_all_customers()
+    return settings_redirect(
+        f"Deleted {result['customers']} customer account(s), "
+        f"{result['reports']} report record(s), and "
+        f"{result['net_capital_files']} Net Capital workbook(s)."
+    )
