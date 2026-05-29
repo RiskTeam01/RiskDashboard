@@ -59,6 +59,8 @@ def add_report_to_customer(
     period_label: Optional[str] = None,
     audit_filename: Optional[str] = None,
     net_capital_filename: Optional[str] = None,
+    credit_sheet: Optional[str] = None,
+    net_capital_sheet: Optional[str] = None,
 ):
     data = _load_raw()
     cust = data.get(customer_id)
@@ -68,11 +70,13 @@ def add_report_to_customer(
         "id": str(uuid.uuid4()),
         "type": report_type,
         "original_filename": original_filename,
-        "output_filename": output_filename,
+        "output_filename": output_filename,   # combined workbook filename
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "period_label": period_label or "",
         "audit_filename": audit_filename or "",
         "net_capital_filename": net_capital_filename or "",
+        "credit_sheet": credit_sheet or "",
+        "net_capital_sheet": net_capital_sheet or "",
     }
     cust.setdefault("reports", []).append(report)
     _save_raw(data)
@@ -91,7 +95,7 @@ def delete_all_customers() -> dict:
 
     nc_deleted = 0
     if NET_CAPITAL_DIR.exists():
-        for path in NET_CAPITAL_DIR.glob("NetCapital_*.xlsx"):
+        for path in NET_CAPITAL_DIR.glob("*.xlsx"):
             try:
                 path.unlink()
                 nc_deleted += 1

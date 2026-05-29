@@ -1,3 +1,4 @@
+import re
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -5,7 +6,7 @@ from typing import Optional
 
 from fastapi import UploadFile
 
-from app.config import UPLOAD_DIR, LOG_DIR, get_template_status
+from app.config import UPLOAD_DIR, LOG_DIR, get_template_status, SHEET_NAME
 from app.utils import (
     BATCH_JOBS, BATCH_JOBS_LOCK,
     safe_filename, save_json_debug, store_job_result,
@@ -14,7 +15,14 @@ from app.utils import (
 from app.automations.credit_worksheet.engine import CreditWorksheetEngine
 from app.automations.credit_worksheet.audit import write_audit_report
 from app.automations.net_capital.engine import NetCapitalEngine
+from app.automations.net_capital.fields import NET_CAPITAL_ROW_MAP, MONTH_COLUMNS, MONTH_NAMES
+from app.automations.combined_workbook import (
+    customer_workbook_path, open_or_create,
+    add_credit_month_sheet, add_or_update_net_capital_sheet,
+    set_recalc_on_open,
+)
 from app.customers import find_or_create_customer, add_report_to_customer
+from app.config import NET_CAPITAL_DIR, detect_backend_template
 
 
 async def stream_save_pdf(
@@ -74,7 +82,7 @@ def run_batch_job(job_id: str):
         user = job.get("user", "unknown")
 
     batch_results = []
-    successful_output_paths: list[Path] = []
+    successful_workbook_paths: list[Path] = []
     combined_debug_lines = []
     template_status = get_template_status()
     template_name = template_status.get("filename", "")
@@ -96,74 +104,129 @@ def run_batch_job(job_id: str):
         engine = CreditWorksheetEngine()
 
         try:
-            output_path, field_results, occurrences_by_code, readability_info, summary = (
-                engine.generate_excel_from_pdf(
-                    pdf_path=upload_path,
-                    recalculate_with_excel=recalc,
-                )
+            # ── 1. Extract PDF ──────────────────────────────────────────────
+            credit_template_path = detect_backend_template()
+            engine.log("[TEMPLATE] Auto-detected backend template:")
+            engine.log(str(credit_template_path))
+            engine.validate_template(credit_template_path)
+
+            field_results, occurrences_by_code, readability_info, summary = (
+                engine.extract_pdf_field_results(upload_path)
+            )
+            engine.validate_no_missing(field_results)
+
+            # ── 2. Customer detection ───────────────────────────────────────
+            engine.log("")
+            engine.log("=" * 100)
+            engine.log("[CUSTOMER & NET CAPITAL]")
+
+            nc_engine = NetCapitalEngine()
+            company_name = nc_engine.extract_company_name(engine.all_words)
+            customer = find_or_create_customer(company_name or "Unknown")
+            customer_id = customer["id"]
+            engine.log(f"[CUSTOMER] '{customer['name']}' (id={customer_id})")
+
+            # ── 3. Determine period month/year ──────────────────────────────
+            date_text = nc_engine.extract_period_end_date(engine.all_words)
+            month: Optional[int] = None
+            year: int = datetime.now().year
+
+            if date_text:
+                month = nc_engine.determine_month(date_text)
+                year_match = re.search(r"\d{4}", date_text)
+                if year_match:
+                    year = int(year_match.group(0))
+                elif re.search(r"\d{2}$", date_text.split("/")[-1] if "/" in date_text else ""):
+                    short_year = int(date_text.split("/")[-1])
+                    year = 2000 + short_year if short_year < 100 else short_year
+
+            if not month:
+                engine.log(f"[WARN] Could not determine month from '{date_text}'. Defaulting to current month.")
+                month = datetime.now().month
+
+            engine.log(f"[PERIOD] month={month} ({MONTH_NAMES[month-1]}), year={year}, date='{date_text}'")
+
+            # ── 4. Build Net Capital occurrence map ─────────────────────────
+            nc_occurrences = nc_engine.build_occurrences(engine.all_words)
+
+            # ── 5. Open/create combined customer workbook ───────────────────
+            NET_CAPITAL_DIR.mkdir(parents=True, exist_ok=True)
+            wb_path = customer_workbook_path(customer["name"], year)
+            wb = open_or_create(wb_path)
+            engine.log(f"[WORKBOOK] {'Opened' if wb_path.exists() else 'Creating'}: {wb_path.name}")
+
+            # ── 6. Add credit month sheet ───────────────────────────────────
+            credit_sheet = add_credit_month_sheet(
+                wb=wb,
+                month=month,
+                year=year,
+                credit_template_path=credit_template_path,
+                credit_template_sheet=SHEET_NAME,
+                field_results=field_results,
+                log=engine.log,
             )
 
+            # ── 7. Add/update Net Capital sheet ────────────────────────────
+            from app.automations.net_capital.engine import detect_net_capital_template
+            nc_template = detect_net_capital_template()
+            nc_sheet = add_or_update_net_capital_sheet(
+                wb=wb,
+                month=month,
+                year=year,
+                company_name=customer["name"],
+                date_text=date_text,
+                net_capital_template_path=nc_template,
+                occurrences_by_code=nc_occurrences,
+                row_map=NET_CAPITAL_ROW_MAP,
+                log=engine.log,
+            )
+
+            set_recalc_on_open(wb)
+            wb.save(wb_path)
+            engine.log(f"[WORKBOOK] Saved: {wb_path}")
+            engine.debug_lines.extend(nc_engine.debug_lines)
+            engine.log("=" * 100)
+
+            # ── 8. Audit report ─────────────────────────────────────────────
             audit_path, metrics = write_audit_report(
                 user=user,
                 original_filename=original_filename,
-                output_path=output_path,
+                output_path=wb_path,
                 template_name=template_name,
                 field_results=field_results,
                 readability_info=readability_info,
             )
 
-            # Detect customer from code 13 (company name) using all_words from engine
-            engine.log("")
-            engine.log("=" * 100)
-            engine.log("[NET CAPITAL AUTOMATION]")
-            nc_engine = NetCapitalEngine()
-            company_name = nc_engine.extract_company_name(engine.all_words)
-            customer = find_or_create_customer(company_name or "Unknown")
-            customer_id = customer["id"]
-            engine.log(f"[CUSTOMER] Matched/created account: '{customer['name']}' (id={customer_id})")
+            log_path = engine.save_debug_log(job_id, suffix=f"pdf_{index}")
 
-            # Run Net Capital automation
-            nc_workbook_path = None
-            try:
-                nc_workbook_path = nc_engine.run(
-                    all_words=engine.all_words,
-                    occurrences_by_code=occurrences_by_code,
-                    customer_id=customer_id,
-                    customer_name=customer["name"],
-                )
-            except Exception as nc_err:
-                nc_engine.log(f"[NET CAPITAL] Error: {nc_err}")
-            # Surface Net Capital log inside the main console output
-            engine.debug_lines.extend(nc_engine.debug_lines)
-            if nc_workbook_path:
-                engine.log(f"[NET CAPITAL] Workbook ready: {nc_workbook_path.name}")
-            else:
-                engine.log("[NET CAPITAL] No workbook produced (see messages above).")
-            engine.log("=" * 100)
-
-            # File report under customer account
+            # ── 9. File report under customer ───────────────────────────────
             add_report_to_customer(
                 customer_id=customer_id,
                 report_type="credit_worksheet",
                 original_filename=original_filename,
-                output_filename=output_path.name,
+                output_filename=wb_path.name,
+                period_label=f"{MONTH_NAMES[month-1]} {year}",
                 audit_filename=audit_path.name,
-                net_capital_filename=nc_workbook_path.name if nc_workbook_path else "",
+                net_capital_filename="",  # same workbook now
+                credit_sheet=credit_sheet,
+                net_capital_sheet=nc_sheet,
             )
 
-            log_path = engine.save_debug_log(job_id, suffix=f"pdf_{index}")
+            successful_workbook_paths.append(wb_path)
 
             item_payload = {
                 "status": "SUCCESS",
                 "job_id": f"{job_id}_{index}",
                 "original_filename": original_filename,
                 "uploaded_pdf": str(upload_path),
-                "output_path": str(output_path),
-                "output_filename": output_path.name,
+                "workbook_path": str(wb_path),
+                "workbook_filename": wb_path.name,
+                "credit_sheet": credit_sheet,
+                "net_capital_sheet": nc_sheet,
                 "audit_filename": audit_path.name,
-                "net_capital_filename": nc_workbook_path.name if nc_workbook_path else "",
                 "customer_id": customer_id,
                 "customer_name": customer["name"],
+                "period_label": f"{MONTH_NAMES[month-1]} {year}",
                 "template": template_status,
                 "readability": readability_info,
                 "summary": summary,
@@ -175,20 +238,21 @@ def run_batch_job(job_id: str):
                 "debug_log": engine.debug_lines,
             }
 
-            successful_output_paths.append(output_path)
             batch_results.append(item_payload)
 
             update_file_entry(
                 job_id, index,
                 status="complete",
-                output_filename=output_path.name,
-                download_url=f"/download-output/{output_path.name}",
+                output_filename=wb_path.name,
+                download_url=f"/download-net-capital/{wb_path.name}",
                 audit_url=f"/download-audit/{audit_path.name}",
                 fields_found=metrics["fields_found_label"],
                 needs_review=metrics["needs_review"],
                 valid_blanks=metrics["valid_blanks"],
                 customer_id=customer_id,
                 customer_name=customer["name"],
+                period_label=f"{MONTH_NAMES[month-1]} {year}",
+                credit_sheet=credit_sheet,
             )
 
         except Exception as e:
@@ -203,7 +267,6 @@ def run_batch_job(job_id: str):
                 "error": str(e),
                 "debug_log": engine.debug_lines,
             })
-
             update_file_entry(job_id, index, status="failed", error=str(e))
 
         combined_debug_lines.extend([f"===== {original_filename} ====="])
@@ -227,8 +290,8 @@ def run_batch_job(job_id: str):
         f"Successful outputs: {success_count}",
         f"Failed outputs: {failure_count}",
         "",
-        "Output naming rule: each Excel file is named after its source PDF.",
-        "An audit report (.txt) is written alongside each successful workbook.",
+        "All outputs are written into per-customer combined workbooks.",
+        "Each workbook contains a credit sheet per month and one accumulating Net Capital sheet.",
     ]
 
     payload = {
@@ -257,13 +320,15 @@ def run_batch_job(job_id: str):
     except Exception:
         pass
 
+    # Deduplicate workbook paths for zip (multiple PDFs may write to the same file)
+    unique_paths = list({str(p): p for p in successful_workbook_paths}.values())
     zip_url = None
     single_url = None
-    if len(successful_output_paths) > 1:
-        zip_path = create_batch_zip(successful_output_paths, job_id)
-        zip_url = f"/download-output/{zip_path.name}"
-    elif len(successful_output_paths) == 1:
-        single_url = f"/download-output/{successful_output_paths[0].name}"
+    if len(unique_paths) > 1:
+        zip_path = create_batch_zip(unique_paths, job_id)
+        zip_url = f"/download-net-capital/{zip_path.name}"
+    elif len(unique_paths) == 1:
+        single_url = f"/download-net-capital/{unique_paths[0].name}"
 
     with BATCH_JOBS_LOCK:
         job = BATCH_JOBS.get(job_id)
